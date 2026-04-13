@@ -1,0 +1,71 @@
+using Microsoft.EntityFrameworkCore;
+using SportsVenueApi.Models;
+
+namespace SportsVenueApi.Data;
+
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+
+    public DbSet<User> Users => Set<User>();
+    public DbSet<Venue> Venues => Set<Venue>();
+    public DbSet<Booking> Bookings => Set<Booking>();
+    public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<RecurringBookingGroup> RecurringBookingGroups => Set<RecurringBookingGroup>();
+    public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<DeviceToken> DeviceTokens => Set<DeviceToken>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<User>(e =>
+        {
+            e.HasIndex(u => u.Email).IsUnique();
+        });
+
+        modelBuilder.Entity<Venue>(e =>
+        {
+            e.HasOne(v => v.Owner)
+             .WithMany()
+             .HasForeignKey(v => v.OwnerId);
+        });
+
+        modelBuilder.Entity<Booking>(e =>
+        {
+            e.HasOne(b => b.Venue)
+             .WithMany()
+             .HasForeignKey(b => b.VenueId);
+
+            e.HasOne(b => b.Player)
+             .WithMany()
+             .HasForeignKey(b => b.PlayerId);
+        });
+
+        modelBuilder.Entity<RecurringBookingGroup>(e =>
+        {
+            e.HasOne(g => g.Player).WithMany().HasForeignKey(g => g.PlayerId);
+            e.HasOne(g => g.Venue).WithMany().HasForeignKey(g => g.VenueId);
+        });
+
+        modelBuilder.Entity<Payment>(e =>
+        {
+            e.HasOne(p => p.Booking)
+             .WithMany()
+             .HasForeignKey(p => p.BookingId);
+
+            e.HasOne(p => p.Player)
+             .WithMany()
+             .HasForeignKey(p => p.PlayerId);
+        });
+
+        modelBuilder.Entity<Notification>(e =>
+        {
+            e.HasOne(n => n.User).WithMany().HasForeignKey(n => n.UserId);
+        });
+
+        modelBuilder.Entity<DeviceToken>(e =>
+        {
+            e.HasOne(d => d.User).WithMany().HasForeignKey(d => d.UserId);
+            e.HasIndex(d => new { d.UserId, d.Token }).IsUnique();
+        });
+    }
+}
