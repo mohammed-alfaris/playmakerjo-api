@@ -19,3 +19,5 @@ Thumbs.db
 ## Secrets (never commit real credentials)
 appsettings.Development.json
 appsettings.*.local.json
+firebase-credentials.json
+**/firebase-credentials.json

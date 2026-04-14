@@ -19,11 +19,13 @@ public class BookingsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly NotificationService _notifications;
+    private readonly ILogger<BookingsController> _logger;
 
-    public BookingsController(AppDbContext db, NotificationService notifications)
+    public BookingsController(AppDbContext db, NotificationService notifications, ILogger<BookingsController> logger)
     {
         _db = db;
         _notifications = notifications;
+        _logger = logger;
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -297,16 +299,90 @@ public class BookingsController : ControllerBase
         if (booking.Status == "completed")
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot cancel a completed booking" });
 
+        if (booking.Status == "no_show")
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot cancel a no-show booking" });
+
         booking.Status = "cancelled";
         await _db.SaveChangesAsync();
 
-        // Notify player + owner about cancellation
-        await _notifications.NotifyBookingCancelled(booking, UserId);
+        // Notify player + owner about cancellation (non-blocking)
+        try { await _notifications.NotifyBookingCancelled(booking, UserId); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Notification failed"); }
 
         return Ok(new ApiResponse<BookingResponse>
         {
             Data = ToDto(booking),
             Message = "Booking cancelled successfully"
+        });
+    }
+
+    // PATCH /api/v1/bookings/{id}/complete — mark a confirmed booking as completed
+    [HttpPatch("{id}/complete")]
+    public async Task<IActionResult> Complete(string id)
+    {
+        var booking = await _db.Bookings
+            .Include(b => b.Venue)
+            .Include(b => b.Player)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.Id == id);
+
+        if (booking == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
+
+        if (UserRole == "player")
+            return Forbid();
+
+        if (UserRole == "venue_owner" && booking.Venue.OwnerId != UserId)
+            return Forbid();
+
+        if (booking.Status != "confirmed")
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Only confirmed bookings can be marked as completed" });
+
+        booking.Status = "completed";
+        await _db.SaveChangesAsync();
+
+        try { await _notifications.NotifyBookingCompleted(booking); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Notification failed"); }
+
+        return Ok(new ApiResponse<BookingResponse>
+        {
+            Data = ToDto(booking),
+            Message = "Booking marked as completed"
+        });
+    }
+
+    // PATCH /api/v1/bookings/{id}/no-show — mark a confirmed booking as no-show
+    [HttpPatch("{id}/no-show")]
+    public async Task<IActionResult> NoShow(string id)
+    {
+        var booking = await _db.Bookings
+            .Include(b => b.Venue)
+            .Include(b => b.Player)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.Id == id);
+
+        if (booking == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
+
+        if (UserRole == "player")
+            return Forbid();
+
+        if (UserRole == "venue_owner" && booking.Venue.OwnerId != UserId)
+            return Forbid();
+
+        if (booking.Status != "confirmed")
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Only confirmed bookings can be marked as no-show" });
+
+        booking.Status = "no_show";
+        await _db.SaveChangesAsync();
+
+        try { await _notifications.NotifyNoShow(booking); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Notification failed"); }
+
+        return Ok(new ApiResponse<BookingResponse>
+        {
+            Data = ToDto(booking),
+            Message = "Booking marked as no-show"
         });
     }
 
@@ -379,8 +455,9 @@ public class BookingsController : ControllerBase
         booking.Status = "pending_review";
         await _db.SaveChangesAsync();
 
-        // Notify venue owner about new proof
-        await _notifications.NotifyProofReceived(booking);
+        // Notify venue owner about new proof (non-blocking)
+        try { await _notifications.NotifyProofReceived(booking); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Notification failed"); }
 
         return Ok(new ApiResponse<BookingResponse>
         {
@@ -430,11 +507,19 @@ public class BookingsController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        // Notify player about proof review result
-        if (req.Approved)
-            await _notifications.NotifyProofApproved(booking);
-        else
-            await _notifications.NotifyProofRejected(booking, req.Note);
+        // Notify player about proof review result (non-blocking — don't fail the request)
+        try
+        {
+            if (req.Approved)
+                await _notifications.NotifyProofApproved(booking);
+            else
+                await _notifications.NotifyProofRejected(booking, req.Note);
+        }
+        catch (Exception ex)
+        {
+            // Log but don't fail the review action
+            _logger.LogWarning(ex, "Notification failed");
+        }
 
         return Ok(new ApiResponse<BookingResponse>
         {

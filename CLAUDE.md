@@ -1,8 +1,8 @@
-# Sports Venue — Backend API
+# YallaNhjez — Backend API
 
 ## Project overview
-ASP.NET Core Web API backend for the Sports Venue multi-sport public venue management platform.
-Serves the React admin dashboard (`sports-venue-dashboard/`).
+ASP.NET Core 9 Web API backend for the YallaNhjez multi-sport venue booking platform.
+Serves the React admin dashboard and the Flutter mobile app.
 Primary market: **Jordan** — default currency JOD.
 
 ---
@@ -11,10 +11,13 @@ Primary market: **Jordan** — default currency JOD.
 | Layer | Technology |
 |-------|-----------|
 | Framework | ASP.NET Core 9 Web API |
-| ORM | Entity Framework Core 9 |
-| Database | MySQL (via Pomelo.EntityFrameworkCore.MySql) |
-| Auth | JWT Bearer + httpOnly cookie for refresh |
+| ORM | Entity Framework Core 9 (with migrations) |
+| Database | MySQL 8.0+ (via Pomelo.EntityFrameworkCore.MySql) |
+| Auth | JWT Bearer (HS256) + httpOnly cookie for refresh |
 | Password hashing | BCrypt.Net-Next |
+| Push notifications | Firebase Admin SDK (FCM) |
+| Logging | Serilog (structured logging) |
+| File uploads | Multipart form, stored in wwwroot/uploads/ |
 | CORS | ASP.NET Core CORS middleware |
 | Server | Kestrel (port 8000) |
 
@@ -22,39 +25,55 @@ Primary market: **Jordan** — default currency JOD.
 
 ## Project structure
 ```
-sports-venue-api/
-├── SportsVenueApi.sln              # Solution file (open in Visual Studio)
+yalla-nhjez-api/
+├── SportsVenueApi.sln
 ├── SportsVenueApi/
-│   ├── Program.cs                  # App setup, DI, middleware pipeline
-│   ├── appsettings.json            # Connection string, JWT config, CORS
-│   ├── Properties/
-│   │   └── launchSettings.json     # Visual Studio launch profile (port 8000)
-│   ├── SportsVenueApi.csproj       # NuGet packages
-│   ├── Models/                     # EF Core entities
+│   ├── Program.cs                  # App setup, DI, middleware, auto-migration
+│   ├── appsettings.json            # Connection string, JWT, CORS, Firebase
+│   ├── firebase-credentials.json   # Firebase service account (not committed)
+│   ├── SportsVenueApi.csproj
+│   ├── Models/
 │   │   ├── User.cs
 │   │   ├── Venue.cs
 │   │   ├── Booking.cs
-│   │   └── Payment.cs
+│   │   ├── Payment.cs
+│   │   ├── Notification.cs
+│   │   ├── NotificationTemplate.cs
+│   │   ├── DeviceToken.cs
+│   │   ├── Favorite.cs
+│   │   ├── RecurringBookingGroup.cs
+│   │   ├── LoyaltyProgram.cs
+│   │   └── LoyaltyPoints.cs
 │   ├── Data/
-│   │   ├── AppDbContext.cs         # EF Core DbContext
-│   │   └── SeedData.cs             # Seed script — mirrors frontend mock data
-│   ├── DTOs/                       # Request/response shapes
-│   │   ├── ApiResponse.cs          # Standard envelope
+│   │   ├── AppDbContext.cs         # DbContext with all DbSets
+│   │   └── SeedData.cs            # Seed script (15 users, 8 venues, etc.)
+│   ├── DTOs/
+│   │   ├── ApiResponse.cs         # Standard envelope + PaginationInfo
 │   │   ├── Auth/
 │   │   ├── Users/
 │   │   ├── Venues/
 │   │   ├── Bookings/
 │   │   ├── Payments/
+│   │   ├── Notifications/
+│   │   ├── Loyalty/
 │   │   └── Reports/
-│   ├── Controllers/                # API endpoints
+│   ├── Controllers/
 │   │   ├── AuthController.cs
 │   │   ├── UsersController.cs
 │   │   ├── VenuesController.cs
 │   │   ├── BookingsController.cs
 │   │   ├── PaymentsController.cs
-│   │   └── ReportsController.cs
-│   └── Services/
-│       └── JwtService.cs           # JWT token creation/validation
+│   │   ├── ReportsController.cs
+│   │   ├── NotificationsController.cs
+│   │   ├── FavoritesController.cs
+│   │   └── UploadsController.cs
+│   ├── Services/
+│   │   ├── JwtService.cs           # JWT token creation/validation
+│   │   └── NotificationService.cs  # In-app + FCM push notifications
+│   ├── Constants/
+│   │   └── PlatformConstants.cs    # System fee percentage (5%)
+│   ├── Migrations/                 # EF Core migrations
+│   └── wwwroot/uploads/            # Uploaded files (venue images, avatars, proofs)
 └── CLAUDE.md
 ```
 
@@ -62,43 +81,14 @@ sports-venue-api/
 
 ## Commands
 ```bash
-# Restore packages
-dotnet restore
-
-# Build
-dotnet build
-
-# Seed database (drops + recreates + inserts data)
-dotnet run -- --seed
-
-# Run server (port 8000)
-dotnet run
-
-# Open in Visual Studio
-# Open SportsVenueApi.sln — runs on port 8000 (configured in launchSettings.json)
-
-# API docs
-# http://localhost:8000/openapi/v1.json
+dotnet restore          # Restore packages
+dotnet build            # Build
+dotnet run -- --seed    # Seed database (drops + recreates + inserts data)
+dotnet run              # Run server (port 8000)
+dotnet ef migrations add <Name>  # Create new migration
 ```
 
----
-
-## Configuration (appsettings.json)
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Server=localhost;Port=3306;Database=sportsvenue;User=root;Password=password;"
-  },
-  "Jwt": {
-    "SecretKey": "dev-secret-key-change-in-production",
-    "AccessTokenExpireMinutes": "15",
-    "RefreshTokenExpireDays": "7"
-  },
-  "Cors": {
-    "Origins": "http://localhost:5173"
-  }
-}
-```
+API docs: `http://localhost:8000/openapi/v1.json`
 
 ---
 
@@ -108,20 +98,22 @@ dotnet run
 - Refresh token: JWT, 7 days expiry, httpOnly cookie
 - `POST /api/v1/auth/refresh` → reads cookie → returns new access token
 - `POST /api/v1/auth/logout` → clears cookie
-- Only `super_admin` and `venue_owner` can log in to the dashboard
+- Three roles: `super_admin`, `venue_owner`, `player`
+- Rate limiting on auth endpoints
 
 ---
 
 ## Dev credentials
 | Role | Email | Password |
 |------|-------|----------|
-| super_admin | admin@sportsvenue.jo | admin123 |
-| venue_owner | khalid@venues.jo | owner123 |
+| super_admin | amermohammed500@gmail.com | M7md.272 |
+| venue_owner | khalid@venues.jo | M7md.272 |
+| player | (register via app) | (user sets) |
 
 ---
 
 ## API response envelope
-All endpoints return:
+All endpoints return `ApiResponse<T>`:
 ```json
 {
   "success": true,
@@ -130,6 +122,7 @@ All endpoints return:
   "pagination": { "page": 1, "limit": 20, "total": 100 }
 }
 ```
+`pagination` is omitted when null (via `JsonIgnore(WhenWritingNull)`).
 
 ---
 
@@ -137,6 +130,7 @@ All endpoints return:
 ```
 Auth
   POST   /api/v1/auth/login
+  POST   /api/v1/auth/register
   POST   /api/v1/auth/refresh
   POST   /api/v1/auth/logout
 
@@ -147,18 +141,59 @@ Venues
   PATCH  /api/v1/venues/{id}
   DELETE /api/v1/venues/{id}
   GET    /api/v1/venues/{id}/stats
+  GET    /api/v1/venues/public                    # No auth — active venues for map/list
+  GET    /api/v1/venues/public/{id}               # No auth — single venue detail
+  GET    /api/v1/venues/{id}/available-slots?date= # Available time slots
 
-Users (admin only)
-  GET    /api/v1/users?page=&limit=&role=&search=
-  PATCH  /api/v1/users/{id}/status
-  PATCH  /api/v1/users/{id}/role
-  PATCH  /api/v1/users/{id}/avatar
+Users
+  GET    /api/v1/users?page=&limit=&role=&search=  # Admin only
+  POST   /api/v1/users                              # Admin only — create user
+  PATCH  /api/v1/users/{id}/status                  # Admin only
+  PATCH  /api/v1/users/{id}/role                    # Admin only
+  PATCH  /api/v1/users/{id}/avatar                  # Admin only
+  GET    /api/v1/users/me                            # Own profile
+  PATCH  /api/v1/users/me                            # Update own profile
+  PATCH  /api/v1/users/me/password                   # Change password
 
 Bookings
   GET    /api/v1/bookings?page=&limit=&status=&venue_id=&from=&to=&owner_id=
+  POST   /api/v1/bookings                           # Create booking
+  GET    /api/v1/bookings/my                         # Player's own bookings
+  GET    /api/v1/bookings/{id}                       # Single booking detail
+  PATCH  /api/v1/bookings/{id}/confirm               # Owner confirms
+  PATCH  /api/v1/bookings/{id}/cancel                # Cancel booking
+  PATCH  /api/v1/bookings/{id}/complete              # Mark completed
+  PATCH  /api/v1/bookings/{id}/no-show               # Mark no-show
+  PATCH  /api/v1/bookings/{id}/upload-proof          # Upload Cliq payment proof
+  PATCH  /api/v1/bookings/{id}/review-proof          # Owner approve/reject proof
+  POST   /api/v1/bookings/recurring                  # Create recurring series
+  PATCH  /api/v1/bookings/recurring/{groupId}/cancel # Cancel recurring series
 
 Payments (admin only)
   GET    /api/v1/payments?page=&limit=&status=
+
+Favorites
+  GET    /api/v1/favorites                           # List user's favorites
+  POST   /api/v1/favorites/{venueId}                 # Add to favorites
+  DELETE /api/v1/favorites/{venueId}                  # Remove from favorites
+  GET    /api/v1/favorites/check?venueIds=id1,id2    # Batch check
+
+Notifications
+  GET    /api/v1/notifications                       # User's notifications
+  GET    /api/v1/notifications/unread-count
+  PATCH  /api/v1/notifications/{id}/read
+  POST   /api/v1/notifications/read-all
+  POST   /api/v1/notifications/device-token          # Register FCM token
+  DELETE /api/v1/notifications/device-token           # Deactivate FCM token
+  GET    /api/v1/notifications/users                 # Admin — users with FCM info
+  POST   /api/v1/notifications/send                  # Admin — send to users
+  GET    /api/v1/notifications/templates             # Admin — template CRUD
+  POST   /api/v1/notifications/templates
+  PATCH  /api/v1/notifications/templates/{id}
+  DELETE /api/v1/notifications/templates/{id}
+
+Uploads
+  POST   /api/v1/uploads                             # Multipart file upload
 
 Reports
   GET    /api/v1/reports/summary?owner_id=
@@ -173,80 +208,104 @@ Reports
 ## Database models
 
 ### User
-- `id` (string PK), `name`, `email` (unique), `phone`, `password_hash`, `role`, `status`, `avatar` (text), `created_at`
+- `id`, `name`, `email` (unique), `phone`, `password_hash`, `role`, `status`, `avatar`, `permissions` (JSON), `created_at`
 
 ### Venue
-- `id` (string PK), `name`, `owner_id` (FK users), `sports` (JSON), `city`, `address`, `price_per_hour`, `status`, `description` (text), `images` (JSON), `latitude`, `longitude`, `created_at`
-- Navigation: `Owner` → User
+- `id`, `name`, `owner_id` (FK), `sports` (JSON), `city`, `address`, `price_per_hour`, `status`, `description`, `images` (JSON), `latitude`, `longitude`, `cliq_alias`, `operating_hours` (JSON), `min_booking_duration`, `max_booking_duration`, `deposit_percentage`, `created_at`
 
 ### Booking
-- `id` (string PK), `venue_id` (FK venues), `player_id` (FK users), `sport`, `date`, `duration`, `amount`, `status`, `created_at`
-- Navigation: `Venue` → Venue, `Player` → User
+- `id`, `venue_id` (FK), `player_id` (FK), `sport`, `date`, `start_time`, `duration`, `amount`, `total_amount`, `deposit_amount`, `deposit_paid`, `amount_paid`, `system_fee_percentage`, `system_fee`, `owner_amount`, `payment_method`, `status`, `notes`, `payment_proof`, `payment_proof_status`, `payment_proof_note`, `recurring_group_id` (FK nullable), `created_at`
 
 ### Payment
-- `id` (string PK), `booking_id` (FK bookings), `player_id` (FK users), `amount`, `method`, `status`, `date`
-- Navigation: `Booking` → Booking, `Player` → User
+- `id`, `booking_id` (FK), `player_id` (FK), `amount`, `method`, `status`, `date`
+
+### RecurringBookingGroup
+- `id`, `player_id` (FK), `venue_id` (FK), `sport`, `day_of_week`, `start_time`, `duration`, `recurrence_type`, `start_date`, `end_date`, `status`
+
+### Notification
+- `id`, `user_id` (FK), `title`, `body`, `type`, `reference_id`, `is_read`, `image`, `created_at`
+
+### NotificationTemplate
+- `id`, `name`, `title`, `body`, `type`, `created_at`
+
+### DeviceToken
+- `id`, `user_id` (FK), `token`, `platform`, `is_active`, `created_at`
+
+### Favorite
+- `id`, `user_id` (FK), `venue_id` (FK), `created_at`
+- Unique index on (user_id, venue_id)
+
+### LoyaltyProgram
+- `id`, `venue_id` (FK unique), `bookings_required`, `reward_type`, `reward_value`, `is_active`, `created_at`
+
+### LoyaltyPoints
+- `id`, `user_id` (FK), `venue_id` (FK), `points`, `total_redeemed`
+
+---
+
+## Revenue split
+- Platform fee: 5% (`PlatformConstants.SystemFeePercentage`)
+- Owner receives 95% of each booking
+- Fields: `system_fee`, `owner_amount` on Booking
+- Admin sees full breakdown; owner sees only their cut
+
+## Payment system
+- **Stripe**: card payment via PaymentIntent (deposit amount)
+- **CliQ**: player transfers to venue's CliQ alias, uploads proof screenshot, owner reviews (approve/reject)
+- Default deposit: 20% of total (configurable per venue via `deposit_percentage`)
 
 ---
 
 ## Owner scoping
 When `venue_owner` is logged in, the backend enforces `owner_id = current_user.id` on:
-- `GET /venues` — only returns their venues
+- `GET /venues` — only their venues
 - `GET /bookings` — only bookings for their venues
 - `GET /reports/summary` — only their stats
-
-Enforced server-side regardless of what the frontend sends.
 
 ---
 
 ## Code conventions
 - All controllers return `ApiResponse<T>` envelope
-- Response field names use **camelCase** via `[JsonPropertyName]` attributes
-- Database columns use **snake_case** via `[Column]` attributes
+- Response fields: **camelCase** via `[JsonPropertyName]`
+- Database columns: **snake_case** via `[Column]`
 - `sports` and `images` on Venue stored as JSON strings with `[NotMapped]` List<string> accessors
-- Sport filtering uses `LIKE` on the JSON string (contains the sport name in quotes)
-- JWT claims: `sub` (user_id), `role`, `type` (access/refresh)
-- ASP.NET auto-maps JWT `sub` → `ClaimTypes.NameIdentifier` and `role` → `ClaimTypes.Role` — always use `ClaimTypes.*` constants in controllers
+- JWT claims: `sub` (user_id), `role`, `type` (access/refresh) — use `ClaimTypes.*` in controllers
 - `[Authorize]` on all controllers except AuthController
-- All queries with `.Include()` use `.AsSplitQuery()` to avoid MySQL sort buffer overflow on large JOINs
-- Count queries are separated from data queries (don't include `.Include()` in the count)
+- All `.Include()` queries use `.AsSplitQuery()` to avoid MySQL sort buffer overflow
+- Count queries separated from data queries
+- ILogger for all warning/error logging (no Console.WriteLine)
+- Auto-migration on startup via `db.Database.MigrateAsync()`
 
 ---
 
 ## MySQL notes
-- Requires MySQL 8.0+ (for JSON column support)
-- If you get "Out of sort memory" errors: `SET GLOBAL sort_buffer_size = 4194304;` (4MB)
-- The `.AsSplitQuery()` pattern on all Include queries prevents most sort buffer issues
-- Database is created automatically by `EnsureCreated()` during seed — no migrations needed
+- Requires MySQL 8.0+ (JSON column support)
+- Sort buffer: `SET GLOBAL sort_buffer_size = 4194304;` if needed
+- `.AsSplitQuery()` pattern prevents most sort buffer issues
 
 ---
 
 ## Seed data
-- 15 users (DiceBear avatars, hashed passwords: admin123 / owner123 / password123)
+- 15 users (DiceBear avatars)
 - 8 venues (Jordan cities, real GPS coordinates, picsum images)
-- 25 bookings (various statuses: pending, confirmed, completed, cancelled)
-- 20 payments (various methods: Credit Card, Cliq, Bank Transfer)
+- 25 bookings (various statuses)
+- 20 payments (various methods)
 
-Run: `dotnet run -- --seed` (drops + recreates all tables + inserts data)
+Run: `dotnet run -- --seed` (applies migrations + drops/recreates data)
 
 ---
 
-## Connecting to frontend
-In the frontend `.env`:
-```env
-VITE_MOCK_API=false
-VITE_API_URL=http://localhost:8000/api/v1
-```
-
-### Running the full stack
+## Connecting to clients
 ```bash
 # Terminal 1: Backend
-cd sports-venue-api/SportsVenueApi
+cd yalla-nhjez-api/SportsVenueApi
 dotnet run                    # http://localhost:8000
 
-# Terminal 2: Frontend
-cd sports-venue-dashboard
+# Terminal 2: Dashboard
+cd yalla-nhjez-dashboard
 npm run dev                   # http://localhost:5173
-```
 
-Or open `SportsVenueApi.sln` in Visual Studio and press F5 for the backend.
+# Terminal 3: Flutter app
+cd yalla-nhjez-app
+flutter run
+```

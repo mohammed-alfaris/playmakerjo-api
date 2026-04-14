@@ -138,6 +138,21 @@ public class VenueUpdateRequest
 
     [JsonPropertyName("longitude")]
     public double? Longitude { get; set; }
+
+    [JsonPropertyName("cliqAlias")]
+    public string? CliqAlias { get; set; }
+
+    [JsonPropertyName("operatingHours")]
+    public object? OperatingHours { get; set; }
+
+    [JsonPropertyName("minBookingDuration")]
+    public int? MinBookingDuration { get; set; }
+
+    [JsonPropertyName("maxBookingDuration")]
+    public int? MaxBookingDuration { get; set; }
+
+    [JsonPropertyName("depositPercentage")]
+    public double? DepositPercentage { get; set; }
 }
 
 public class VenueStatsResponse

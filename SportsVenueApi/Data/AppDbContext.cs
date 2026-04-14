@@ -14,6 +14,8 @@ public class AppDbContext : DbContext
     public DbSet<RecurringBookingGroup> RecurringBookingGroups => Set<RecurringBookingGroup>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<DeviceToken> DeviceTokens => Set<DeviceToken>();
+    public DbSet<NotificationTemplate> NotificationTemplates => Set<NotificationTemplate>();
+    public DbSet<Favorite> Favorites => Set<Favorite>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -66,6 +68,13 @@ public class AppDbContext : DbContext
         {
             e.HasOne(d => d.User).WithMany().HasForeignKey(d => d.UserId);
             e.HasIndex(d => new { d.UserId, d.Token }).IsUnique();
+        });
+
+        modelBuilder.Entity<Favorite>(e =>
+        {
+            e.HasOne(f => f.User).WithMany().HasForeignKey(f => f.UserId);
+            e.HasOne(f => f.Venue).WithMany().HasForeignKey(f => f.VenueId);
+            e.HasIndex(f => new { f.UserId, f.VenueId }).IsUnique();
         });
     }
 }

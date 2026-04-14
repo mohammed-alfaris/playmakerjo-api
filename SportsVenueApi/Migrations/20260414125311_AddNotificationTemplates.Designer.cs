@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SportsVenueApi.Data;
 
@@ -11,9 +12,11 @@ using SportsVenueApi.Data;
 namespace SportsVenueApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260414125311_AddNotificationTemplates")]
+    partial class AddNotificationTemplates
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -176,39 +179,6 @@ namespace SportsVenueApi.Migrations
                         .IsUnique();
 
                     b.ToTable("device_tokens");
-                });
-
-            modelBuilder.Entity("SportsVenueApi.Models.Favorite", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("id");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("user_id");
-
-                    b.Property<string>("VenueId")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("venue_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("VenueId");
-
-                    b.HasIndex("UserId", "VenueId")
-                        .IsUnique();
-
-                    b.ToTable("favorites");
                 });
 
             modelBuilder.Entity("SportsVenueApi.Models.Notification", b =>
@@ -604,25 +574,6 @@ namespace SportsVenueApi.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
-                });
-
-            modelBuilder.Entity("SportsVenueApi.Models.Favorite", b =>
-                {
-                    b.HasOne("SportsVenueApi.Models.User", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("SportsVenueApi.Models.Venue", "Venue")
-                        .WithMany()
-                        .HasForeignKey("VenueId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("User");
-
-                    b.Navigation("Venue");
                 });
 
             modelBuilder.Entity("SportsVenueApi.Models.Notification", b =>

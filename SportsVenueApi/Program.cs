@@ -1,6 +1,8 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
 using System.Threading.RateLimiting;
+using FirebaseAdmin;
+using Google.Apis.Auth.OAuth2;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -33,6 +35,22 @@ var secretKey = builder.Configuration["Jwt:SecretKey"]
     ?? throw new InvalidOperationException("Jwt:SecretKey is not configured. Set it in appsettings.json or environment variables.");
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddScoped<NotificationService>();
+
+// Firebase Admin SDK
+var firebaseCredPath = builder.Configuration["Firebase:CredentialFile"];
+if (!string.IsNullOrEmpty(firebaseCredPath) && File.Exists(firebaseCredPath))
+{
+    FirebaseApp.Create(new AppOptions
+    {
+        Credential = GoogleCredential.FromFile(firebaseCredPath),
+    });
+}
+else
+{
+    // Try default credentials (GOOGLE_APPLICATION_CREDENTIALS env var)
+    try { FirebaseApp.Create(); }
+    catch { Log.Warning("Firebase Admin SDK not initialized — push notifications disabled. Set Firebase:CredentialFile in appsettings.json"); }
+}
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -58,7 +76,9 @@ builder.Services.AddCors(options =>
         // Always use explicit origins so withCredentials works in the browser.
         var origins = builder.Environment.IsDevelopment()
             ? new[] { "http://localhost:5173", "http://localhost:5174", "http://localhost:5175",
-                       "http://localhost:8080", "http://localhost:3000" }
+                       "http://localhost:5176", "http://localhost:5177",
+                       "http://localhost:8080", "http://localhost:8081", "http://localhost:8082",
+                       "http://localhost:3000" }
             : corsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         policy.WithOrigins(origins)
@@ -83,6 +103,12 @@ builder.Services.AddRateLimiter(options =>
 // Health checks
 builder.Services.AddHealthChecks()
     .AddMySql(connectionString, name: "mysql");
+
+// Configure multipart body size for file uploads
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 5 * 1024 * 1024; // 5MB
+});
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
@@ -126,6 +152,13 @@ else
 
 app.UseSerilogRequestLogging();
 app.UseCors();
+
+// Serve uploaded files as static files
+var uploadsPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+Directory.CreateDirectory(Path.Combine(uploadsPath, "uploads", "venues"));
+Directory.CreateDirectory(Path.Combine(uploadsPath, "uploads", "avatars"));
+Directory.CreateDirectory(Path.Combine(uploadsPath, "uploads", "proofs"));
+app.UseStaticFiles();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();

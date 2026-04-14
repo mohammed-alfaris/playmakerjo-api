@@ -6,6 +6,7 @@ using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Notifications;
 using SportsVenueApi.Models;
+using SportsVenueApi.Services;
 
 namespace SportsVenueApi.Controllers;
 
@@ -15,8 +16,15 @@ namespace SportsVenueApi.Controllers;
 public class NotificationsController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly NotificationService _notifications;
+    private readonly ILogger<NotificationsController> _logger;
 
-    public NotificationsController(AppDbContext db) => _db = db;
+    public NotificationsController(AppDbContext db, NotificationService notifications, ILogger<NotificationsController> logger)
+    {
+        _db = db;
+        _notifications = notifications;
+        _logger = logger;
+    }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
 
@@ -45,15 +53,14 @@ public class NotificationsController : ControllerBase
             })
             .ToListAsync();
 
-        return Ok(new
+        return Ok(new ApiResponse<NotificationListResponse>
         {
-            success = true,
-            data = new NotificationListResponse
+            Data = new NotificationListResponse
             {
                 Notifications = notifications,
                 UnreadCount = unreadCount,
             },
-            pagination = new { page, limit, total },
+            Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total },
         });
     }
 
@@ -129,5 +136,204 @@ public class NotificationsController : ControllerBase
             .ExecuteUpdateAsync(d => d.SetProperty(x => x.IsActive, false));
 
         return Ok(new ApiResponse<object> { Message = "Device token deactivated" });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Admin: Send notification to a specific user
+    // ══════════════════════════════════════════════════════════════════════
+
+    [HttpGet("users")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> GetUsersWithFcm(
+        [FromQuery] string? search,
+        [FromQuery] string? role,
+        [FromQuery] int page = 1,
+        [FromQuery] int limit = 50)
+    {
+        var query = _db.Users.AsQueryable();
+
+        if (!string.IsNullOrEmpty(search))
+            query = query.Where(u => u.Name.Contains(search) || u.Email.Contains(search));
+
+        if (!string.IsNullOrEmpty(role))
+            query = query.Where(u => u.Role == role);
+
+        var total = await query.CountAsync();
+
+        // Get active device token info grouped by user
+        var activeTokens = await _db.DeviceTokens
+            .Where(d => d.IsActive)
+            .GroupBy(d => d.UserId)
+            .Select(g => new { UserId = g.Key, Platforms = g.Select(d => d.Platform).Distinct().ToList() })
+            .ToDictionaryAsync(g => g.UserId, g => g.Platforms);
+
+        var users = await query
+            .OrderBy(u => u.Name)
+            .Skip((page - 1) * limit)
+            .Take(limit)
+            .Select(u => new UserWithFcmResponse
+            {
+                Id = u.Id,
+                Name = u.Name,
+                Email = u.Email,
+                Phone = u.Phone,
+                Role = u.Role,
+                Status = u.Status,
+                Avatar = u.Avatar,
+            })
+            .ToListAsync();
+
+        // Enrich with FCM data
+        foreach (var u in users)
+        {
+            if (activeTokens.TryGetValue(u.Id, out var platforms))
+            {
+                u.HasFcm = true;
+                u.FcmPlatforms = platforms;
+            }
+        }
+
+        return Ok(new ApiResponse<List<UserWithFcmResponse>>
+        {
+            Data = users,
+            Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total },
+        });
+    }
+
+    [HttpPost("send")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> AdminSendNotification([FromBody] AdminSendNotificationRequest req)
+    {
+        if (req.UserIds.Count == 0 || string.IsNullOrEmpty(req.Title) || string.IsNullOrEmpty(req.Body))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "userIds, title, and body are required" });
+
+        var existingIds = await _db.Users
+            .Where(u => req.UserIds.Contains(u.Id))
+            .Select(u => u.Id)
+            .ToListAsync();
+
+        if (existingIds.Count == 0)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "No valid users found" });
+
+        var sent = 0;
+        foreach (var uid in existingIds)
+        {
+            try
+            {
+                await _notifications.CreateNotification(uid, req.Title, req.Body, req.Type, image: req.Image);
+                sent++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to notify user {UserId}", uid);
+            }
+        }
+
+        return Ok(new ApiResponse<object>
+        {
+            Data = new { sent, total = existingIds.Count },
+            Message = $"Notification sent to {sent} user(s)",
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Admin: Notification Templates CRUD
+    // ══════════════════════════════════════════════════════════════════════
+
+    [HttpGet("templates")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> GetTemplates()
+    {
+        var templates = await _db.NotificationTemplates
+            .OrderByDescending(t => t.CreatedAt)
+            .Select(t => new TemplateResponse
+            {
+                Id = t.Id,
+                Name = t.Name,
+                Title = t.Title,
+                Body = t.Body,
+                Type = t.Type,
+                CreatedAt = t.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            })
+            .ToListAsync();
+
+        return Ok(new ApiResponse<List<TemplateResponse>> { Data = templates });
+    }
+
+    [HttpPost("templates")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> CreateTemplate([FromBody] CreateTemplateRequest req)
+    {
+        if (string.IsNullOrEmpty(req.Name) || string.IsNullOrEmpty(req.Title) || string.IsNullOrEmpty(req.Body))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "name, title, and body are required" });
+
+        var template = new NotificationTemplate
+        {
+            Name = req.Name,
+            Title = req.Title,
+            Body = req.Body,
+            Type = req.Type,
+        };
+
+        _db.NotificationTemplates.Add(template);
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<TemplateResponse>
+        {
+            Data = new TemplateResponse
+            {
+                Id = template.Id,
+                Name = template.Name,
+                Title = template.Title,
+                Body = template.Body,
+                Type = template.Type,
+                CreatedAt = template.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            },
+            Message = "Template created",
+        });
+    }
+
+    [HttpPatch("templates/{id}")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> UpdateTemplate(string id, [FromBody] UpdateTemplateRequest req)
+    {
+        var template = await _db.NotificationTemplates.FindAsync(id);
+        if (template == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Template not found" });
+
+        if (req.Name != null) template.Name = req.Name;
+        if (req.Title != null) template.Title = req.Title;
+        if (req.Body != null) template.Body = req.Body;
+        if (req.Type != null) template.Type = req.Type;
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<TemplateResponse>
+        {
+            Data = new TemplateResponse
+            {
+                Id = template.Id,
+                Name = template.Name,
+                Title = template.Title,
+                Body = template.Body,
+                Type = template.Type,
+                CreatedAt = template.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            },
+            Message = "Template updated",
+        });
+    }
+
+    [HttpDelete("templates/{id}")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> DeleteTemplate(string id)
+    {
+        var deleted = await _db.NotificationTemplates
+            .Where(t => t.Id == id)
+            .ExecuteDeleteAsync();
+
+        if (deleted == 0)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Template not found" });
+
+        return Ok(new ApiResponse<object> { Message = "Template deleted" });
     }
 }

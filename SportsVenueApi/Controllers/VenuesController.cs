@@ -201,6 +201,11 @@ public class VenuesController : ControllerBase
         if (req.Images != null) venue.Images = req.Images;
         if (req.Latitude.HasValue) venue.Latitude = req.Latitude;
         if (req.Longitude.HasValue) venue.Longitude = req.Longitude;
+        if (req.CliqAlias != null) venue.CliqAlias = req.CliqAlias;
+        if (req.OperatingHours != null) venue.OperatingHoursJson = JsonSerializer.Serialize(req.OperatingHours);
+        if (req.MinBookingDuration.HasValue) venue.MinBookingDuration = req.MinBookingDuration.Value;
+        if (req.MaxBookingDuration.HasValue) venue.MaxBookingDuration = req.MaxBookingDuration.Value;
+        if (req.DepositPercentage.HasValue) venue.DepositPercentage = req.DepositPercentage.Value;
 
         await _db.SaveChangesAsync();
 
