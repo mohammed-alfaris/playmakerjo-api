@@ -19,11 +19,22 @@ public class NotificationsController : ControllerBase
     private readonly NotificationService _notifications;
     private readonly ILogger<NotificationsController> _logger;
 
-    public NotificationsController(AppDbContext db, NotificationService notifications, ILogger<NotificationsController> logger)
+    private readonly string _uploadsBaseUrl;
+
+    public NotificationsController(AppDbContext db, NotificationService notifications, ILogger<NotificationsController> logger, IConfiguration config)
     {
         _db = db;
         _notifications = notifications;
         _logger = logger;
+        _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
+    }
+
+    private string? NormalizeUploadUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
+        var idx = url.IndexOf("/uploads/");
+        if (idx < 0) return url;
+        return _uploadsBaseUrl + url[idx..];
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -179,9 +190,13 @@ public class NotificationsController : ControllerBase
                 Phone = u.Phone,
                 Role = u.Role,
                 Status = u.Status,
-                Avatar = u.Avatar,
+                Avatar = u.Avatar, // normalized below
             })
             .ToListAsync();
+
+        // Normalize avatar URLs
+        foreach (var u in users)
+            u.Avatar = NormalizeUploadUrl(u.Avatar);
 
         // Enrich with FCM data
         foreach (var u in users)

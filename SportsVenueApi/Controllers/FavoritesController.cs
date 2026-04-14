@@ -14,8 +14,21 @@ namespace SportsVenueApi.Controllers;
 public class FavoritesController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly string _uploadsBaseUrl;
 
-    public FavoritesController(AppDbContext db) => _db = db;
+    public FavoritesController(AppDbContext db, IConfiguration config)
+    {
+        _db = db;
+        _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
+    }
+
+    private string? NormalizeUploadUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
+        var idx = url.IndexOf("/uploads/");
+        if (idx < 0) return url;
+        return _uploadsBaseUrl + url[idx..];
+    }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
 
@@ -55,7 +68,7 @@ public class FavoritesController : ControllerBase
             if (f.ImagesJson != null)
             {
                 var images = System.Text.Json.JsonSerializer.Deserialize<List<string>>(f.ImagesJson);
-                coverImage = images?.FirstOrDefault();
+                coverImage = NormalizeUploadUrl(images?.FirstOrDefault());
             }
             return new
             {

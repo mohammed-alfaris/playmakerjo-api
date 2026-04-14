@@ -17,12 +17,22 @@ public class AuthController : ControllerBase
     private readonly AppDbContext _db;
     private readonly JwtService _jwt;
     private readonly IWebHostEnvironment _env;
+    private readonly string _uploadsBaseUrl;
 
-    public AuthController(AppDbContext db, JwtService jwt, IWebHostEnvironment env)
+    public AuthController(AppDbContext db, JwtService jwt, IWebHostEnvironment env, IConfiguration config)
     {
         _db = db;
         _jwt = jwt;
         _env = env;
+        _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
+    }
+
+    private string? NormalizeUploadUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
+        var idx = url.IndexOf("/uploads/");
+        if (idx < 0) return url;
+        return _uploadsBaseUrl + url[idx..];
     }
 
     [HttpPost("login")]
@@ -47,8 +57,8 @@ public class AuthController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Email))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Email is required" });
 
-        if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 6)
-            return BadRequest(new ApiResponse<object> { Success = false, Message = "Password must be at least 6 characters" });
+        if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 8)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Password must be at least 8 characters" });
 
         var exists = await _db.Users.AnyAsync(u => u.Email == req.Email);
         if (exists)
@@ -102,7 +112,13 @@ public class AuthController : ControllerBase
     [HttpPost("logout")]
     public IActionResult Logout()
     {
-        Response.Cookies.Delete("refresh_token", new CookieOptions { Path = "/" });
+        Response.Cookies.Delete("refresh_token", new CookieOptions
+        {
+            Path = "/",
+            HttpOnly = true,
+            Secure = !_env.IsDevelopment(),
+            SameSite = _env.IsDevelopment() ? SameSiteMode.Lax : SameSiteMode.Strict,
+        });
         return Ok(new ApiResponse<object> { Data = null, Message = "Logged out" });
     }
 
@@ -131,7 +147,7 @@ public class AuthController : ControllerBase
                     Email = user.Email,
                     Role = user.Role,
                     Phone = user.Phone,
-                    Avatar = user.Avatar
+                    Avatar = NormalizeUploadUrl(user.Avatar)
                 },
                 AccessToken = accessToken
             },

@@ -43,6 +43,11 @@ public class User
     [MaxLength(20)]
     public string? Permissions { get; set; }
 
+    /// <summary>"en" or "ar" — used for push notification language</summary>
+    [Column("preferred_language")]
+    [MaxLength(5)]
+    public string PreferredLanguage { get; set; } = "en";
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

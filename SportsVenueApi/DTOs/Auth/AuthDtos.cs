@@ -72,4 +72,13 @@ public class UpdateProfileRequest
 
     [JsonPropertyName("avatar")]
     public string? Avatar { get; set; }
+
+    [JsonPropertyName("preferredLanguage")]
+    public string? PreferredLanguage { get; set; }
+}
+
+public class UpdateLanguageRequest
+{
+    [JsonPropertyName("language")]
+    public string Language { get; set; } = "en";
 }

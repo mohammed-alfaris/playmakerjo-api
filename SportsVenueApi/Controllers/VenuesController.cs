@@ -17,13 +17,26 @@ namespace SportsVenueApi.Controllers;
 public class VenuesController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly string _uploadsBaseUrl;
 
-    public VenuesController(AppDbContext db) => _db = db;
+    public VenuesController(AppDbContext db, IConfiguration config)
+    {
+        _db = db;
+        _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
+    }
+
+    private string? NormalizeUploadUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
+        var idx = url.IndexOf("/uploads/");
+        if (idx < 0) return url;
+        return _uploadsBaseUrl + url[idx..];
+    }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
 
-    private static VenueResponse ToDto(Venue v) => new()
+    private VenueResponse ToDto(Venue v) => new()
     {
         Id = v.Id,
         Name = v.Name,
@@ -34,7 +47,7 @@ public class VenuesController : ControllerBase
         PricePerHour = v.PricePerHour,
         Status = v.Status,
         Description = v.Description,
-        Images = v.Images,
+        Images = v.Images?.Select(NormalizeUploadUrl).ToList()!,
         Latitude = v.Latitude,
         Longitude = v.Longitude,
         CliqAlias = v.CliqAlias,

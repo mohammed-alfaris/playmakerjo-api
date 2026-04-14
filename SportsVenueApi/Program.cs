@@ -129,6 +129,18 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.MigrateAsync();
+
+    // Ensure UTF-8 support for Arabic text
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync("SET NAMES utf8mb4");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER DATABASE sportsvenue CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "UTF-8 charset migration warning (non-fatal)");
+    }
 }
 
 if (app.Environment.IsDevelopment())

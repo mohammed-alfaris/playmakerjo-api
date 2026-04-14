@@ -16,13 +16,26 @@ namespace SportsVenueApi.Controllers;
 public class UsersController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly string _uploadsBaseUrl;
 
-    public UsersController(AppDbContext db) => _db = db;
+    public UsersController(AppDbContext db, IConfiguration config)
+    {
+        _db = db;
+        _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
+    }
+
+    private string? NormalizeUploadUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
+        var idx = url.IndexOf("/uploads/");
+        if (idx < 0) return url;
+        return _uploadsBaseUrl + url[idx..];
+    }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
 
-    private static UserResponse ToDto(Models.User u) => new()
+    private UserResponse ToDto(Models.User u) => new()
     {
         Id = u.Id,
         Name = u.Name,
@@ -30,7 +43,7 @@ public class UsersController : ControllerBase
         Phone = u.Phone,
         Role = u.Role,
         Status = u.Status,
-        Avatar = u.Avatar,
+        Avatar = NormalizeUploadUrl(u.Avatar),
         Permissions = u.Permissions,
         CreatedAt = u.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
     };
@@ -55,10 +68,29 @@ public class UsersController : ControllerBase
         if (req.Name != null) user.Name = req.Name.Trim();
         if (req.Phone != null) user.Phone = req.Phone.Trim();
         if (req.Avatar != null) user.Avatar = req.Avatar;
+        if (req.PreferredLanguage != null && (req.PreferredLanguage == "en" || req.PreferredLanguage == "ar"))
+            user.PreferredLanguage = req.PreferredLanguage;
 
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "Profile updated" });
+    }
+
+    /// <summary>Update user's preferred language for push notifications.</summary>
+    [HttpPatch("me/language")]
+    public async Task<IActionResult> UpdateLanguage([FromBody] UpdateLanguageRequest req)
+    {
+        if (req.Language != "en" && req.Language != "ar")
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Language must be 'en' or 'ar'" });
+
+        var user = await _db.Users.FindAsync(UserId);
+        if (user == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
+
+        user.PreferredLanguage = req.Language;
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<object> { Data = new { language = user.PreferredLanguage }, Message = "Language updated" });
     }
 
     [HttpPatch("me/password")]
@@ -71,8 +103,8 @@ public class UsersController : ControllerBase
         if (!BCrypt.Net.BCrypt.Verify(req.CurrentPassword, user.PasswordHash))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Current password is incorrect" });
 
-        if (req.NewPassword.Length < 6)
-            return BadRequest(new ApiResponse<object> { Success = false, Message = "New password must be at least 6 characters" });
+        if (req.NewPassword.Length < 8)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "New password must be at least 8 characters" });
 
         user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.NewPassword);
         await _db.SaveChangesAsync();

@@ -36,11 +36,18 @@ public class NotificationService
 
     /// <summary>
     /// Send push notification to all active devices of a user via FCM.
+    /// Uses the user's preferred language from the database.
     /// </summary>
     private async Task SendPushNotification(string userId, string title, string body, string type, string? referenceId, string? image = null)
     {
         try
         {
+            // Get user's preferred language
+            var userLang = await _db.Users
+                .Where(u => u.Id == userId)
+                .Select(u => u.PreferredLanguage)
+                .FirstOrDefaultAsync() ?? "en";
+
             var tokens = await _db.DeviceTokens
                 .Where(d => d.UserId == userId && d.IsActive)
                 .Select(d => d.Token)
@@ -53,8 +60,8 @@ public class NotificationService
                 Tokens = tokens,
                 Notification = new FirebaseAdmin.Messaging.Notification
                 {
-                    Title = title,
-                    Body = body,
+                    Title = Localized(title, userLang),
+                    Body = Localized(body, userLang),
                     ImageUrl = image,
                 },
                 Data = new Dictionary<string, string>
@@ -117,12 +124,31 @@ public class NotificationService
         }
     }
 
+    // ── Bilingual helpers ──────────────────────────────────────────────
+    // Format: "English|العربية" — the app splits on "|" and picks by locale.
+    private static string Bi(string en, string ar) => $"{en}|{ar}";
+
+    /// <summary>
+    /// Extract the correct language part from a bilingual "en|ar" string.
+    /// </summary>
+    private static string Localized(string bilingualText, string lang)
+    {
+        var idx = bilingualText.IndexOf('|');
+        if (idx < 0) return bilingualText;
+        return lang == "ar" ? bilingualText[(idx + 1)..] : bilingualText[..idx];
+    }
+
     public async Task NotifyBookingConfirmed(Booking booking)
     {
+        var venue = booking.Venue?.Name ?? "venue";
+        var date = booking.Date.ToString("MMM dd");
         await CreateNotification(
             booking.PlayerId,
-            "Booking Confirmed",
-            $"Your booking at {booking.Venue?.Name ?? "venue"} on {booking.Date:MMM dd} has been confirmed.",
+            Bi("Booking Confirmed", "تم تأكيد الحجز"),
+            Bi(
+                $"Your booking at {venue} on {date} has been confirmed.",
+                $"تم تأكيد حجزك في {venue} بتاريخ {date}."
+            ),
             "booking_confirmed",
             booking.Id
         );
@@ -132,10 +158,14 @@ public class NotificationService
     {
         if (booking.Venue != null)
         {
+            var player = booking.Player?.Name ?? "a player";
             await CreateNotification(
                 booking.Venue.OwnerId,
-                "Payment Proof Received",
-                $"A payment proof has been uploaded for booking at {booking.Venue.Name} by {booking.Player?.Name ?? "a player"}.",
+                Bi("Payment Proof Received", "تم استلام إثبات الدفع"),
+                Bi(
+                    $"A payment proof has been uploaded for booking at {booking.Venue.Name} by {player}.",
+                    $"تم رفع إثبات دفع لحجز في {booking.Venue.Name} من قبل {player}."
+                ),
                 "proof_received",
                 booking.Id
             );
@@ -144,10 +174,14 @@ public class NotificationService
 
     public async Task NotifyProofApproved(Booking booking)
     {
+        var venue = booking.Venue?.Name ?? "venue";
         await CreateNotification(
             booking.PlayerId,
-            "Payment Approved",
-            $"Your payment proof for {booking.Venue?.Name ?? "venue"} has been approved. Your booking is confirmed!",
+            Bi("Payment Approved", "تمت الموافقة على الدفع"),
+            Bi(
+                $"Your payment proof for {venue} has been approved. Your booking is confirmed!",
+                $"تمت الموافقة على إثبات الدفع لـ {venue}. تم تأكيد حجزك!"
+            ),
             "proof_approved",
             booking.Id
         );
@@ -155,14 +189,19 @@ public class NotificationService
 
     public async Task NotifyProofRejected(Booking booking, string? reason)
     {
-        var body = $"Your payment proof for {booking.Venue?.Name ?? "venue"} was rejected.";
+        var venue = booking.Venue?.Name ?? "venue";
+        var enBody = $"Your payment proof for {venue} was rejected.";
+        var arBody = $"تم رفض إثبات الدفع لـ {venue}.";
         if (!string.IsNullOrEmpty(reason))
-            body += $" Reason: {reason}";
+        {
+            enBody += $" Reason: {reason}";
+            arBody += $" السبب: {reason}";
+        }
 
         await CreateNotification(
             booking.PlayerId,
-            "Payment Rejected",
-            body,
+            Bi("Payment Rejected", "تم رفض الدفع"),
+            Bi(enBody, arBody),
             "proof_rejected",
             booking.Id
         );
@@ -170,12 +209,19 @@ public class NotificationService
 
     public async Task NotifyBookingCancelled(Booking booking, string cancelledByUserId)
     {
+        var venue = booking.Venue?.Name ?? "venue";
+        var date = booking.Date.ToString("MMM dd");
+        var player = booking.Player?.Name ?? "a player";
+
         if (cancelledByUserId != booking.PlayerId)
         {
             await CreateNotification(
                 booking.PlayerId,
-                "Booking Cancelled",
-                $"Your booking at {booking.Venue?.Name ?? "venue"} on {booking.Date:MMM dd} has been cancelled.",
+                Bi("Booking Cancelled", "تم إلغاء الحجز"),
+                Bi(
+                    $"Your booking at {venue} on {date} has been cancelled.",
+                    $"تم إلغاء حجزك في {venue} بتاريخ {date}."
+                ),
                 "booking_cancelled",
                 booking.Id
             );
@@ -185,8 +231,11 @@ public class NotificationService
         {
             await CreateNotification(
                 booking.Venue.OwnerId,
-                "Booking Cancelled",
-                $"A booking at {booking.Venue.Name} by {booking.Player?.Name ?? "a player"} on {booking.Date:MMM dd} has been cancelled.",
+                Bi("Booking Cancelled", "تم إلغاء الحجز"),
+                Bi(
+                    $"A booking at {booking.Venue.Name} by {player} on {date} has been cancelled.",
+                    $"تم إلغاء حجز في {booking.Venue.Name} من قبل {player} بتاريخ {date}."
+                ),
                 "booking_cancelled",
                 booking.Id
             );
@@ -195,10 +244,15 @@ public class NotificationService
 
     public async Task NotifyBookingCompleted(Booking booking)
     {
+        var venue = booking.Venue?.Name ?? "venue";
+        var date = booking.Date.ToString("MMM dd");
         await CreateNotification(
             booking.PlayerId,
-            "Booking Completed",
-            $"Your booking at {booking.Venue?.Name ?? "venue"} on {booking.Date:MMM dd} has been marked as completed.",
+            Bi("Booking Completed", "اكتمل الحجز"),
+            Bi(
+                $"Your booking at {venue} on {date} has been marked as completed.",
+                $"تم تحديد حجزك في {venue} بتاريخ {date} كمكتمل."
+            ),
             "booking_completed",
             booking.Id
         );
@@ -206,10 +260,15 @@ public class NotificationService
 
     public async Task NotifyNoShow(Booking booking)
     {
+        var venue = booking.Venue?.Name ?? "venue";
+        var date = booking.Date.ToString("MMM dd");
         await CreateNotification(
             booking.PlayerId,
-            "No Show",
-            $"You were marked as a no-show for your booking at {booking.Venue?.Name ?? "venue"} on {booking.Date:MMM dd}.",
+            Bi("No Show", "لم يحضر"),
+            Bi(
+                $"You were marked as a no-show for your booking at {venue} on {date}.",
+                $"تم تسجيلك كغائب عن حجزك في {venue} بتاريخ {date}."
+            ),
             "no_show",
             booking.Id
         );
