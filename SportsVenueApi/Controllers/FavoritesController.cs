@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
+using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
 
 namespace SportsVenueApi.Controllers;
@@ -20,14 +21,6 @@ public class FavoritesController : ControllerBase
     {
         _db = db;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
-    }
-
-    private string? NormalizeUploadUrl(string? url)
-    {
-        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
-        var idx = url.IndexOf("/uploads/");
-        if (idx < 0) return url;
-        return _uploadsBaseUrl + url[idx..];
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -68,7 +61,7 @@ public class FavoritesController : ControllerBase
             if (f.ImagesJson != null)
             {
                 var images = System.Text.Json.JsonSerializer.Deserialize<List<string>>(f.ImagesJson);
-                coverImage = NormalizeUploadUrl(images?.FirstOrDefault());
+                coverImage = UploadUrlHelper.Normalize(images?.FirstOrDefault(), _uploadsBaseUrl);
             }
             return new
             {

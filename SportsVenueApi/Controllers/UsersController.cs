@@ -6,6 +6,7 @@ using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Auth;
 using SportsVenueApi.DTOs.Users;
+using SportsVenueApi.Helpers;
 using BCrypt.Net;
 
 namespace SportsVenueApi.Controllers;
@@ -24,14 +25,6 @@ public class UsersController : ControllerBase
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
     }
 
-    private string? NormalizeUploadUrl(string? url)
-    {
-        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
-        var idx = url.IndexOf("/uploads/");
-        if (idx < 0) return url;
-        return _uploadsBaseUrl + url[idx..];
-    }
-
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
 
@@ -43,7 +36,7 @@ public class UsersController : ControllerBase
         Phone = u.Phone,
         Role = u.Role,
         Status = u.Status,
-        Avatar = NormalizeUploadUrl(u.Avatar),
+        Avatar = UploadUrlHelper.Normalize(u.Avatar, _uploadsBaseUrl),
         Permissions = u.Permissions,
         CreatedAt = u.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
     };

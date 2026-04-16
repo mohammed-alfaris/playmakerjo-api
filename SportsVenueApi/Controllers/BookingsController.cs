@@ -3,10 +3,11 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Bookings;
-using SportsVenueApi.Constants;
+using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
 using SportsVenueApi.Services;
 
@@ -28,19 +29,6 @@ public class BookingsController : ControllerBase
         _notifications = notifications;
         _logger = logger;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
-    }
-
-    /// <summary>
-    /// Rewrites upload URLs stored with localhost to use the configured BaseUrl.
-    /// This ensures URLs work from mobile devices on the same network.
-    /// </summary>
-    private string? NormalizeUploadUrl(string? url)
-    {
-        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
-        // Extract the relative path (/uploads/...)
-        var idx = url.IndexOf("/uploads/");
-        if (idx < 0) return url;
-        return _uploadsBaseUrl + url[idx..];
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -805,7 +793,7 @@ public class BookingsController : ControllerBase
                 Id = b.Venue.Id,
                 Name = b.Venue.Name,
                 City = b.Venue.City,
-                Images = b.Venue.Images?.Select(NormalizeUploadUrl).ToList()!,
+                Images = b.Venue.Images?.Select(x => UploadUrlHelper.Normalize(x, _uploadsBaseUrl)).ToList()!,
                 CliqAlias = b.Venue.CliqAlias
             },
             Player = new PlayerRef { Id = b.Player.Id, Name = b.Player.Name },
@@ -820,7 +808,7 @@ public class BookingsController : ControllerBase
             AmountPaid = b.AmountPaid,
             PaymentMethod = b.PaymentMethod,
             Notes = b.Notes,
-            PaymentProof = includeFullProof ? NormalizeUploadUrl(b.PaymentProof) : (b.PaymentProof != null ? "(uploaded)" : null),
+            PaymentProof = includeFullProof ? UploadUrlHelper.Normalize(b.PaymentProof, _uploadsBaseUrl) : (b.PaymentProof != null ? "(uploaded)" : null),
             PaymentProofStatus = b.PaymentProofStatus,
             PaymentProofNote = b.PaymentProofNote,
             RecurringGroupId = b.RecurringGroupId,

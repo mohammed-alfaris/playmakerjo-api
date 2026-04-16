@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Notifications;
+using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
 using SportsVenueApi.Services;
 
@@ -27,14 +28,6 @@ public class NotificationsController : ControllerBase
         _notifications = notifications;
         _logger = logger;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
-    }
-
-    private string? NormalizeUploadUrl(string? url)
-    {
-        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
-        var idx = url.IndexOf("/uploads/");
-        if (idx < 0) return url;
-        return _uploadsBaseUrl + url[idx..];
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -196,7 +189,7 @@ public class NotificationsController : ControllerBase
 
         // Normalize avatar URLs
         foreach (var u in users)
-            u.Avatar = NormalizeUploadUrl(u.Avatar);
+            u.Avatar = UploadUrlHelper.Normalize(u.Avatar, _uploadsBaseUrl);
 
         // Enrich with FCM data
         foreach (var u in users)

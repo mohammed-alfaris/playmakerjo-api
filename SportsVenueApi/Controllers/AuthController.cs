@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Auth;
+using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
 using SportsVenueApi.Services;
 
@@ -25,14 +26,6 @@ public class AuthController : ControllerBase
         _jwt = jwt;
         _env = env;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
-    }
-
-    private string? NormalizeUploadUrl(string? url)
-    {
-        if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return url;
-        var idx = url.IndexOf("/uploads/");
-        if (idx < 0) return url;
-        return _uploadsBaseUrl + url[idx..];
     }
 
     [HttpPost("login")]
@@ -147,7 +140,7 @@ public class AuthController : ControllerBase
                     Email = user.Email,
                     Role = user.Role,
                     Phone = user.Phone,
-                    Avatar = NormalizeUploadUrl(user.Avatar)
+                    Avatar = UploadUrlHelper.Normalize(user.Avatar, _uploadsBaseUrl)
                 },
                 AccessToken = accessToken
             },
