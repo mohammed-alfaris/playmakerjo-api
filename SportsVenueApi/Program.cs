@@ -43,10 +43,14 @@ if (string.IsNullOrWhiteSpace(secretKey) || secretKey.Length < 32)
 
 // Refuse the well-known placeholder secret in production. In development we tolerate it
 // to keep the local workflow simple, but production must use a real random key.
-const string PlaceholderJwtSecret = "CHANGE-THIS-IN-PRODUCTION-MIN-32-CHARS!!";
-if (builder.Environment.IsProduction() && secretKey == PlaceholderJwtSecret)
+string[] knownJwtPlaceholders =
+{
+    "CHANGE-THIS-IN-PRODUCTION-MIN-32-CHARS!!",
+    "REPLACE-WITH-STRONG-RANDOM-KEY-MIN-32-CHARS"
+};
+if (builder.Environment.IsProduction() && knownJwtPlaceholders.Contains(secretKey))
     throw new InvalidOperationException(
-        "Jwt:SecretKey is set to the well-known placeholder value. " +
+        "Jwt:SecretKey is set to a well-known placeholder value. " +
         "Generate a random key (e.g. `openssl rand -base64 48`) and set it via " +
         "the Jwt__SecretKey environment variable.");
 builder.Services.AddSingleton<JwtService>();
