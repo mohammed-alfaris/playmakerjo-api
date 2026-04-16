@@ -5,6 +5,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SportsVenueApi", "SportsVenueApi\SportsVenueApi.csproj", "{CB5F2122-1A08-42DB-8FBC-A1EB7A0D56C8}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SportsVenueApi.Tests", "SportsVenueApi.Tests\SportsVenueApi.Tests.csproj", "{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,6 +29,18 @@ Global
 		{CB5F2122-1A08-42DB-8FBC-A1EB7A0D56C8}.Release|x64.Build.0 = Release|Any CPU
 		{CB5F2122-1A08-42DB-8FBC-A1EB7A0D56C8}.Release|x86.ActiveCfg = Release|Any CPU
 		{CB5F2122-1A08-42DB-8FBC-A1EB7A0D56C8}.Release|x86.Build.0 = Release|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Debug|x64.Build.0 = Debug|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Debug|x86.Build.0 = Debug|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Release|x64.ActiveCfg = Release|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Release|x64.Build.0 = Release|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Release|x86.ActiveCfg = Release|Any CPU
+		{1E5EE785-1917-4A00-8092-8F9F82EFBF9E}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
