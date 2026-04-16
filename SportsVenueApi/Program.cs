@@ -24,15 +24,31 @@ builder.Host.UseSerilog((context, config) =>
 });
 
 // Database
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is not configured. Set it in appsettings.json or environment variables.");
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+if (string.IsNullOrWhiteSpace(connectionString))
+    throw new InvalidOperationException(
+        "ConnectionStrings:DefaultConnection is not configured. " +
+        "Set it via appsettings.Development.json (dev), user-secrets, or the " +
+        "ConnectionStrings__DefaultConnection environment variable (prod).");
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString)));
 
 // JWT
-var secretKey = builder.Configuration["Jwt:SecretKey"]
-    ?? throw new InvalidOperationException("Jwt:SecretKey is not configured. Set it in appsettings.json or environment variables.");
+var secretKey = builder.Configuration["Jwt:SecretKey"];
+if (string.IsNullOrWhiteSpace(secretKey) || secretKey.Length < 32)
+    throw new InvalidOperationException(
+        "Jwt:SecretKey is missing or shorter than 32 characters. " +
+        "Set it via user-secrets (dev) or the Jwt__SecretKey environment variable (prod).");
+
+// Refuse the well-known placeholder secret in production. In development we tolerate it
+// to keep the local workflow simple, but production must use a real random key.
+const string PlaceholderJwtSecret = "CHANGE-THIS-IN-PRODUCTION-MIN-32-CHARS!!";
+if (builder.Environment.IsProduction() && secretKey == PlaceholderJwtSecret)
+    throw new InvalidOperationException(
+        "Jwt:SecretKey is set to the well-known placeholder value. " +
+        "Generate a random key (e.g. `openssl rand -base64 48`) and set it via " +
+        "the Jwt__SecretKey environment variable.");
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddScoped<NotificationService>();
 
