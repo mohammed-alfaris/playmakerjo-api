@@ -171,16 +171,9 @@ else
 {
     app.UseHsts();
     app.UseHttpsRedirection();
-    app.UseExceptionHandler(errorApp =>
-    {
-        errorApp.Run(async context =>
-        {
-            context.Response.StatusCode = 500;
-            context.Response.ContentType = "application/json";
-            await context.Response.WriteAsJsonAsync(new { success = false, message = "An unexpected error occurred." });
-        });
-    });
 }
+
+app.UseMiddleware<SportsVenueApi.Middleware.GlobalExceptionMiddleware>();
 
 app.UseSerilogRequestLogging();
 app.UseCors();
