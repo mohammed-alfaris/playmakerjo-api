@@ -22,3 +22,10 @@ appsettings.Production.json
 appsettings.*.local.json
 firebase-credentials.json
 **/firebase-credentials.json
+
+## User uploads (runtime data, lives in Docker volume in prod)
+wwwroot/uploads/**
+SportsVenueApi/wwwroot/uploads/**
+# Keep the directories themselves so wwwroot structure exists for local dev
+!wwwroot/uploads/.gitkeep
+!SportsVenueApi/wwwroot/uploads/.gitkeep
