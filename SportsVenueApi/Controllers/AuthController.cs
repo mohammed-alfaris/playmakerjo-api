@@ -1,3 +1,4 @@
+using Google.Apis.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -18,13 +19,17 @@ public class AuthController : ControllerBase
     private readonly AppDbContext _db;
     private readonly JwtService _jwt;
     private readonly IWebHostEnvironment _env;
+    private readonly IConfiguration _config;
+    private readonly ILogger<AuthController> _logger;
     private readonly string _uploadsBaseUrl;
 
-    public AuthController(AppDbContext db, JwtService jwt, IWebHostEnvironment env, IConfiguration config)
+    public AuthController(AppDbContext db, JwtService jwt, IWebHostEnvironment env, IConfiguration config, ILogger<AuthController> logger)
     {
         _db = db;
         _jwt = jwt;
         _env = env;
+        _config = config;
+        _logger = logger;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
     }
 
@@ -34,6 +39,57 @@ public class AuthController : ControllerBase
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == req.Email);
         if (user == null || !BCrypt.Net.BCrypt.Verify(req.Password, user.PasswordHash))
             return Unauthorized(new ApiResponse<object> { Success = false, Message = "Invalid credentials" });
+
+        if (user.Status == "banned")
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Account is banned" });
+
+        return Ok(IssueTokens(user));
+    }
+
+    // POST /api/v1/auth/google
+    // Validates a Google ID token (issued by GoogleSignIn on the device)
+    // and logs the matching user in. If no user exists with that email we
+    // return 404 so the client can prompt them to register first — per the
+    // product decision to gate first-time login behind phone-number capture.
+    [HttpPost("google")]
+    public async Task<IActionResult> GoogleSignIn([FromBody] GoogleSignInRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.IdToken))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "idToken is required" });
+
+        var expectedAudience = _config["Google:WebClientId"];
+        if (string.IsNullOrWhiteSpace(expectedAudience))
+        {
+            _logger.LogError("Google sign-in hit but Google:WebClientId is not configured");
+            return StatusCode(500, new ApiResponse<object> { Success = false, Message = "Google sign-in not configured on this server" });
+        }
+
+        GoogleJsonWebSignature.Payload payload;
+        try
+        {
+            var settings = new GoogleJsonWebSignature.ValidationSettings
+            {
+                Audience = new[] { expectedAudience },
+            };
+            payload = await GoogleJsonWebSignature.ValidateAsync(req.IdToken, settings);
+        }
+        catch (InvalidJwtException ex)
+        {
+            _logger.LogWarning(ex, "Google ID token validation failed");
+            return Unauthorized(new ApiResponse<object> { Success = false, Message = "Invalid Google token" });
+        }
+
+        var email = (payload.Email ?? "").Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(email))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Google account has no email" });
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
+        if (user == null)
+            return NotFound(new ApiResponse<object>
+            {
+                Success = false,
+                Message = "No account found for this Google email. Please register first with your phone number."
+            });
 
         if (user.Status == "banned")
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Account is banned" });

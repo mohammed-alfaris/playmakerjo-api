@@ -82,3 +82,15 @@ public class UpdateLanguageRequest
     [JsonPropertyName("language")]
     public string Language { get; set; } = "en";
 }
+
+/// <summary>
+/// Client sends the Google-issued ID token (JWT) obtained from
+/// GoogleSignIn on the device. Server validates the token against
+/// Google's public keys + expected audience, then looks up the user
+/// by email.
+/// </summary>
+public class GoogleSignInRequest
+{
+    [JsonPropertyName("idToken")]
+    public string IdToken { get; set; } = "";
+}
