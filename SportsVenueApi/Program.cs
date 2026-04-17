@@ -187,7 +187,16 @@ var uploadsPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
 Directory.CreateDirectory(Path.Combine(uploadsPath, "uploads", "venues"));
 Directory.CreateDirectory(Path.Combine(uploadsPath, "uploads", "avatars"));
 Directory.CreateDirectory(Path.Combine(uploadsPath, "uploads", "proofs"));
-app.UseStaticFiles();
+// Register HEIC/HEIF MIME types so StaticFileMiddleware serves them instead
+// of returning 404. Without this, iOS/Samsung photos uploaded as HEIC come
+// back with a not-found error when the dashboard or app tries to render them.
+var contentTypeProvider = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
+contentTypeProvider.Mappings[".heic"] = "image/heic";
+contentTypeProvider.Mappings[".heif"] = "image/heif";
+app.UseStaticFiles(new StaticFileOptions
+{
+    ContentTypeProvider = contentTypeProvider,
+});
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
