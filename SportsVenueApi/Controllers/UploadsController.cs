@@ -70,7 +70,7 @@ public class UploadsController : ControllerBase
         // no extension (common when image_picker on Android returns a file
         // whose name is just a UUID with no suffix).
         var allowedExtensions = _config.GetSection("Uploads:AllowedExtensions").Get<string[]>()
-            ?? new[] { ".jpg", ".jpeg", ".png", ".webp" };
+            ?? new[] { ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif" };
         var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
         if (string.IsNullOrEmpty(ext))
         {
