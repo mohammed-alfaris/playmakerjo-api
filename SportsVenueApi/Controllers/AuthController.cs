@@ -84,12 +84,29 @@ public class AuthController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Google account has no email" });
 
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+        // First-time Google sign-in: provision a minimal account from the
+        // verified Google profile. Phone is left null and collected on a
+        // "complete profile" screen on the next app launch. PasswordHash
+        // stays empty — user can't log in with password until they set one
+        // (future feature).
         if (user == null)
-            return NotFound(new ApiResponse<object>
+        {
+            var googleName = (payload.Name ?? payload.GivenName ?? email.Split('@')[0]).Trim();
+            user = new User
             {
-                Success = false,
-                Message = "No account found for this Google email. Please register first with your phone number."
-            });
+                Name = googleName,
+                Email = email,
+                Phone = null,
+                Avatar = payload.Picture,
+                PasswordHash = string.Empty,
+                Role = "player",
+                Status = "active",
+            };
+            _db.Users.Add(user);
+            await _db.SaveChangesAsync();
+            _logger.LogInformation("Google sign-in auto-created user {Email}", email);
+        }
 
         if (user.Status == "banned")
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Account is banned" });
