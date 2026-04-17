@@ -23,7 +23,7 @@ public class ReviewsController : ControllerBase
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
 
-    private static ReviewResponse ToDto(Review r) => new()
+    private static ReviewResponse ToDto(Review r, bool includeVenueName = false) => new()
     {
         Id = r.Id,
         PlayerId = r.PlayerId,
@@ -34,6 +34,8 @@ public class ReviewsController : ControllerBase
         Comment = r.Comment,
         CreatedAt = r.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ"),
         UpdatedAt = r.UpdatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+        Hidden = r.Hidden,
+        VenueName = includeVenueName ? r.Venue?.Name : null,
     };
 
     /// <summary>Public: paginated, non-hidden reviews for a venue.</summary>
@@ -56,7 +58,7 @@ public class ReviewsController : ControllerBase
 
         return Ok(new ApiResponse<List<ReviewResponse>>
         {
-            Data = items.Select(ToDto).ToList(),
+            Data = items.Select(r => ToDto(r)).ToList(),
             Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total },
         });
     }
@@ -172,5 +174,71 @@ public class ReviewsController : ControllerBase
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<ReviewResponse> { Data = ToDto(review), Message = "Review updated" });
+    }
+
+    // ── Admin moderation endpoints ──
+
+    /// <summary>Admin: paginated list of all reviews (including hidden) across all venues.</summary>
+    [Authorize(Roles = "super_admin")]
+    [HttpGet("admin")]
+    public async Task<IActionResult> AdminList(
+        [FromQuery] int page = 1,
+        [FromQuery] int limit = 20,
+        [FromQuery] string? venueId = null,
+        [FromQuery] string? status = null,
+        [FromQuery] string? from = null,
+        [FromQuery] string? to = null)
+    {
+        var query = _db.Reviews.AsQueryable();
+
+        if (!string.IsNullOrEmpty(venueId))
+            query = query.Where(r => r.VenueId == venueId);
+
+        if (!string.IsNullOrEmpty(status))
+        {
+            if (status == "visible")
+                query = query.Where(r => !r.Hidden);
+            else if (status == "hidden")
+                query = query.Where(r => r.Hidden);
+        }
+
+        if (!string.IsNullOrEmpty(from) && DateTime.TryParse(from, out var fromDate))
+            query = query.Where(r => r.CreatedAt >= fromDate);
+
+        if (!string.IsNullOrEmpty(to) && DateTime.TryParse(to, out var toDate))
+            query = query.Where(r => r.CreatedAt <= toDate);
+
+        var total = await query.CountAsync();
+
+        var items = await query
+            .OrderByDescending(r => r.CreatedAt)
+            .Skip((page - 1) * limit)
+            .Take(limit)
+            .Include(r => r.Player)
+            .Include(r => r.Venue)
+            .AsSplitQuery()
+            .ToListAsync();
+
+        return Ok(new ApiResponse<List<ReviewResponse>>
+        {
+            Data = items.Select(r => ToDto(r, includeVenueName: true)).ToList(),
+            Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total },
+        });
+    }
+
+    /// <summary>Admin: soft-delete a review by setting Hidden = true.</summary>
+    [Authorize(Roles = "super_admin")]
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> AdminHide(string id)
+    {
+        var review = await _db.Reviews.FirstOrDefaultAsync(r => r.Id == id);
+        if (review == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Review not found" });
+
+        review.Hidden = true;
+        review.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<object> { Data = null, Message = "Review hidden" });
     }
 }

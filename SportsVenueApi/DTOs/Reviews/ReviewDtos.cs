@@ -31,6 +31,13 @@ public class ReviewResponse
 
     [JsonPropertyName("updatedAt")]
     public string UpdatedAt { get; set; } = "";
+
+    [JsonPropertyName("hidden")]
+    public bool Hidden { get; set; }
+
+    [JsonPropertyName("venueName")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? VenueName { get; set; }
 }
 
 public class CreateReviewRequest
