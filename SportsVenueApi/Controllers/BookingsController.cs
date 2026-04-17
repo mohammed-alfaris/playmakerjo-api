@@ -174,7 +174,7 @@ public class BookingsController : ControllerBase
             return BadRequest(new ApiResponse<object>
             {
                 Success = false,
-                Message = $"Duration must be between {venue.MinBookingDuration} and {venue.MaxBookingDuration} hours"
+                Message = $"Duration must be between {venue.MinBookingDuration} and {venue.MaxBookingDuration} minutes"
             });
 
         // Check operating hours for the day
@@ -189,7 +189,7 @@ public class BookingsController : ControllerBase
                 if (TimeSpan.TryParse(dayHours.GetValueOrDefault("open", "00:00"), out var openTime) &&
                     TimeSpan.TryParse(dayHours.GetValueOrDefault("close", "23:59"), out var closeTime))
                 {
-                    var endTimeSpan = startTimeSpan + TimeSpan.FromHours(req.Duration);
+                    var endTimeSpan = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
                     if (startTimeSpan < openTime || endTimeSpan > closeTime)
                         return BadRequest(new ApiResponse<object>
                         {
@@ -201,7 +201,7 @@ public class BookingsController : ControllerBase
         }
 
         // Check for slot conflicts
-        var endTime = startTimeSpan + TimeSpan.FromHours(req.Duration);
+        var endTime = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
         var existingBookings = await _db.Bookings
             .Where(b => b.VenueId == req.VenueId
                 && b.Date.Date == bookingDate.Date
@@ -213,7 +213,7 @@ public class BookingsController : ControllerBase
         {
             if (TimeSpan.TryParse(existing.StartTime, out var existingStart))
             {
-                var existingEnd = existingStart + TimeSpan.FromHours(existing.Duration);
+                var existingEnd = existingStart + TimeSpan.FromMinutes(existing.Duration);
                 // Check overlap: new start < existing end AND new end > existing start
                 if (startTimeSpan < existingEnd && endTime > existingStart)
                 {
@@ -231,7 +231,7 @@ public class BookingsController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Card payments coming soon. Please use CliQ." });
 
         // Calculate amounts + revenue split
-        var totalAmount = venue.PricePerHour * req.Duration;
+        var totalAmount = venue.PricePerHour * req.Duration / 60.0;
         var depositAmount = totalAmount * (venue.DepositPercentage / 100.0);
         var systemFee = totalAmount * (PlatformConstants.SystemFeePercentage / 100.0);
         var ownerAmount = totalAmount - systemFee;
@@ -597,7 +597,7 @@ public class BookingsController : ControllerBase
             return BadRequest(new ApiResponse<object>
             {
                 Success = false,
-                Message = $"Duration must be between {venue.MinBookingDuration} and {venue.MaxBookingDuration} hours"
+                Message = $"Duration must be between {venue.MinBookingDuration} and {venue.MaxBookingDuration} minutes"
             });
 
         var recurType = (req.RecurrenceType ?? "weekly").ToLower();
@@ -616,7 +616,7 @@ public class BookingsController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = "No occurrences in the selected range" });
 
         // Validate operating hours for that day-of-week (same every week)
-        var endTime = startTimeSpan + TimeSpan.FromHours(req.Duration);
+        var endTime = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
         var dayName = startDate.DayOfWeek.ToString().ToLower()[..3];
         var operatingHours = venue.OperatingHours;
         if (operatingHours != null && operatingHours.TryGetValue(dayName, out var dayHoursObj))
@@ -654,7 +654,7 @@ public class BookingsController : ControllerBase
             {
                 if (TimeSpan.TryParse(ex.StartTime, out var exStart))
                 {
-                    var exEnd = exStart + TimeSpan.FromHours(ex.Duration);
+                    var exEnd = exStart + TimeSpan.FromMinutes(ex.Duration);
                     if (startTimeSpan < exEnd && endTime > exStart)
                     {
                         conflict = true;
@@ -679,7 +679,7 @@ public class BookingsController : ControllerBase
         if (validDates.Count == 0)
             return BadRequest(new ApiResponse<object> { Success = false, Message = "All occurrences conflict with existing bookings" });
 
-        var totalAmount = venue.PricePerHour * req.Duration;
+        var totalAmount = venue.PricePerHour * req.Duration / 60.0;
         var depositAmount = totalAmount * (venue.DepositPercentage / 100.0);
         var systemFee = totalAmount * (PlatformConstants.SystemFeePercentage / 100.0);
         var ownerAmount = totalAmount - systemFee;

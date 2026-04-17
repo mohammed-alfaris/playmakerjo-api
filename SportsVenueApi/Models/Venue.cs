@@ -57,10 +57,10 @@ public class Venue
     public string OperatingHoursJson { get; set; } = "{}";
 
     [Column("min_booking_duration")]
-    public int MinBookingDuration { get; set; } = 1;
+    public int MinBookingDuration { get; set; } = 60;
 
     [Column("max_booking_duration")]
-    public int MaxBookingDuration { get; set; } = 3;
+    public int MaxBookingDuration { get; set; } = 180;
 
     [Column("deposit_percentage")]
     public double DepositPercentage { get; set; } = 20.0;

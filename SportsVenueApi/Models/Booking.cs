@@ -31,7 +31,7 @@ public class Booking
     public string? StartTime { get; set; }  // "08:00", "14:30" etc.
 
     [Column("duration")]
-    public int Duration { get; set; } = 1;
+    public int Duration { get; set; } = 60;
 
     [Column("amount")]
     public double Amount { get; set; }
