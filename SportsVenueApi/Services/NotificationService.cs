@@ -74,7 +74,7 @@ public class NotificationService
                     Priority = Priority.High,
                     Notification = new AndroidNotification
                     {
-                        ChannelId = "yallanhjez_bookings",
+                        ChannelId = "playmakerjo_bookings",
                         Sound = "default",
                     },
                 },

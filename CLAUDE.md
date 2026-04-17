@@ -1,7 +1,7 @@
-# YallaNhjez — Backend API
+# PlayMaker JO — Backend API
 
 ## Project overview
-ASP.NET Core 9 Web API backend for the YallaNhjez multi-sport venue booking platform.
+ASP.NET Core 9 Web API backend for the PlayMaker JO multi-sport venue booking platform.
 Serves the React admin dashboard and the Flutter mobile app.
 Primary market: **Jordan** — default currency JOD.
 
@@ -25,7 +25,7 @@ Primary market: **Jordan** — default currency JOD.
 
 ## Project structure
 ```
-yalla-nhjez-api/
+sports-venue-api/
 ├── SportsVenueApi.sln
 ├── SportsVenueApi/
 │   ├── Program.cs                  # App setup, DI, middleware, auto-migration
@@ -298,14 +298,14 @@ Run: `dotnet run -- --seed` (applies migrations + drops/recreates data)
 ## Connecting to clients
 ```bash
 # Terminal 1: Backend
-cd yalla-nhjez-api/SportsVenueApi
+cd sports-venue-api/SportsVenueApi
 dotnet run                    # http://localhost:8000
 
 # Terminal 2: Dashboard
-cd yalla-nhjez-dashboard
+cd sports-venue-dashboard
 npm run dev                   # http://localhost:5173
 
 # Terminal 3: Flutter app
-cd yalla-nhjez-app
+cd playmaker-jo-app
 flutter run
 ```

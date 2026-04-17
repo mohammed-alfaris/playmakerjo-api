@@ -41,7 +41,7 @@ public class JwtService
                 ValidateIssuerSigningKey = true,
                 IssuerSigningKey = key,
                 ValidateIssuer = true,
-                ValidIssuer = "YallaNhjez",
+                ValidIssuer = "PlayMakerJO",
                 ValidateAudience = false,
                 ValidateLifetime = true,
                 ClockSkew = TimeSpan.Zero
@@ -73,7 +73,7 @@ public class JwtService
         };
 
         var token = new JwtSecurityToken(
-            issuer: "YallaNhjez",
+            issuer: "PlayMakerJO",
             claims: claims,
             expires: DateTime.UtcNow.Add(expiry),
             signingCredentials: creds
