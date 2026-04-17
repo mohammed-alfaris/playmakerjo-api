@@ -51,6 +51,53 @@ public class VenuesController : ControllerBase
         CreatedAt = v.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
     };
 
+    /// <summary>Stamp averageRating + reviewCount onto a batch of venue DTOs from non-hidden reviews.</summary>
+    private async Task StampAggregatesAsync(List<VenueResponse> dtos)
+    {
+        if (dtos.Count == 0) return;
+        var ids = dtos.Select(d => d.Id).ToList();
+        var stats = await _db.Reviews
+            .Where(r => ids.Contains(r.VenueId) && !r.Hidden)
+            .GroupBy(r => r.VenueId)
+            .Select(g => new { VenueId = g.Key, Avg = g.Average(x => (double)x.Rating), Count = g.Count() })
+            .ToListAsync();
+        var map = stats.ToDictionary(s => s.VenueId, s => s);
+        foreach (var d in dtos)
+        {
+            if (map.TryGetValue(d.Id, out var s))
+            {
+                d.AverageRating = Math.Round(s.Avg, 2);
+                d.ReviewCount = s.Count;
+            }
+            else
+            {
+                d.AverageRating = null;
+                d.ReviewCount = 0;
+            }
+        }
+    }
+
+    /// <summary>Stamp averageRating + reviewCount on a single venue DTO.</summary>
+    private async Task StampAggregateAsync(VenueResponse dto)
+    {
+        var stat = await _db.Reviews
+            .Where(r => r.VenueId == dto.Id && !r.Hidden)
+            .GroupBy(r => r.VenueId)
+            .Select(g => new { Avg = g.Average(x => (double)x.Rating), Count = g.Count() })
+            .FirstOrDefaultAsync();
+
+        if (stat == null)
+        {
+            dto.AverageRating = null;
+            dto.ReviewCount = 0;
+        }
+        else
+        {
+            dto.AverageRating = Math.Round(stat.Avg, 2);
+            dto.ReviewCount = stat.Count;
+        }
+    }
+
     // ── Public endpoints (no auth required) ──
 
     [AllowAnonymous]
@@ -83,9 +130,12 @@ public class VenuesController : ControllerBase
             .Take(limit)
             .ToListAsync();
 
+        var dtos = venues.Select(ToDto).ToList();
+        await StampAggregatesAsync(dtos);
+
         return Ok(new ApiResponse<List<VenueResponse>>
         {
-            Data = venues.Select(ToDto).ToList(),
+            Data = dtos,
             Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total }
         });
     }
@@ -101,7 +151,9 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(venue) });
+        var dto = ToDto(venue);
+        await StampAggregateAsync(dto);
+        return Ok(new ApiResponse<VenueResponse> { Data = dto });
     }
 
     [HttpGet]
@@ -141,9 +193,12 @@ public class VenuesController : ControllerBase
             .Take(limit)
             .ToListAsync();
 
+        var dtos = venues.Select(ToDto).ToList();
+        await StampAggregatesAsync(dtos);
+
         return Ok(new ApiResponse<List<VenueResponse>>
         {
-            Data = venues.Select(ToDto).ToList(),
+            Data = dtos,
             Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total }
         });
     }
@@ -186,7 +241,9 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(venue) });
+        var dto = ToDto(venue);
+        await StampAggregateAsync(dto);
+        return Ok(new ApiResponse<VenueResponse> { Data = dto });
     }
 
     [HttpPatch("{venueId}")]

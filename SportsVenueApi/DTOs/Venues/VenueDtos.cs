@@ -66,6 +66,12 @@ public class VenueResponse
 
     [JsonPropertyName("createdAt")]
     public string CreatedAt { get; set; } = "";
+
+    [JsonPropertyName("averageRating")]
+    public double? AverageRating { get; set; }
+
+    [JsonPropertyName("reviewCount")]
+    public int ReviewCount { get; set; }
 }
 
 public class VenueCreateRequest

@@ -169,6 +169,25 @@ public static class SeedData
         db.Payments.AddRange(payments);
         await db.SaveChangesAsync();
 
-        Console.WriteLine($"Seed complete: {users.Count} users, {venues.Count} venues, {bookings.Count} bookings, {payments.Count} payments");
+        // Reviews — only for (player, venue) pairs that have at least one completed booking.
+        // Unique on (PlayerId, VenueId).
+        var reviews = new List<Review>
+        {
+            new() { Id = "r1",  PlayerId = "u8",  VenueId = "v1", Rating = 5, Comment = "Excellent pitch, lights were perfect for evening matches.",     CreatedAt = today.AddDays(-28), UpdatedAt = today.AddDays(-28) },
+            new() { Id = "r2",  PlayerId = "u9",  VenueId = "v2", Rating = 4, Comment = "Clean indoor court and friendly staff. Would book again.",      CreatedAt = today.AddDays(-26), UpdatedAt = today.AddDays(-26) },
+            new() { Id = "r3",  PlayerId = "u11", VenueId = "v4", Rating = 5, Comment = "AC made a huge difference. Best padel courts in Irbid.",        CreatedAt = today.AddDays(-24), UpdatedAt = today.AddDays(-24) },
+            new() { Id = "r4",  PlayerId = "u13", VenueId = "v5", Rating = 4, Comment = "جو رائع على شاطئ البحر الأحمر، تنظيم ممتاز.",                    CreatedAt = today.AddDays(-20), UpdatedAt = today.AddDays(-20) },
+            new() { Id = "r5",  PlayerId = "u14", VenueId = "v7", Rating = 5, Comment = "Full size ground with a proper pavilion. Highly recommended.",  CreatedAt = today.AddDays(-18), UpdatedAt = today.AddDays(-18) },
+            new() { Id = "r6",  PlayerId = "u14", VenueId = "v8", Rating = 5, Comment = "ملعب رائع ومياه نظيفة جداً.",                                    CreatedAt = today.AddDays(-9),  UpdatedAt = today.AddDays(-9) },
+            new() { Id = "r7",  PlayerId = "u9",  VenueId = "v4", Rating = 4, Comment = "Good value. Court surface could use a touch-up but overall fun.", CreatedAt = today.AddDays(-6),  UpdatedAt = today.AddDays(-6) },
+            new() { Id = "r8",  PlayerId = "u11", VenueId = "v5", Rating = 3, Comment = "Nice location, but parking is tight on weekends.",              CreatedAt = today.AddDays(-5),  UpdatedAt = today.AddDays(-5) },
+            new() { Id = "r9",  PlayerId = "u14", VenueId = "v2", Rating = 4, Comment = "Solid basketball setup. Will return with friends.",             CreatedAt = today.AddDays(-2),  UpdatedAt = today.AddDays(-2) },
+            new() { Id = "r10", PlayerId = "u8",  VenueId = "v4", Rating = 5, Comment = "تجربة ممتازة والخدمة سريعة.",                                    CreatedAt = today.AddDays(-1),  UpdatedAt = today.AddDays(-1) },
+        };
+
+        db.Reviews.AddRange(reviews);
+        await db.SaveChangesAsync();
+
+        Console.WriteLine($"Seed complete: {users.Count} users, {venues.Count} venues, {bookings.Count} bookings, {payments.Count} payments, {reviews.Count} reviews");
     }
 }

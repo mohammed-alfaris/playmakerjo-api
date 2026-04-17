@@ -16,6 +16,7 @@ public class AppDbContext : DbContext
     public DbSet<DeviceToken> DeviceTokens => Set<DeviceToken>();
     public DbSet<NotificationTemplate> NotificationTemplates => Set<NotificationTemplate>();
     public DbSet<Favorite> Favorites => Set<Favorite>();
+    public DbSet<Review> Reviews => Set<Review>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -75,6 +76,13 @@ public class AppDbContext : DbContext
             e.HasOne(f => f.User).WithMany().HasForeignKey(f => f.UserId);
             e.HasOne(f => f.Venue).WithMany().HasForeignKey(f => f.VenueId);
             e.HasIndex(f => new { f.UserId, f.VenueId }).IsUnique();
+        });
+
+        modelBuilder.Entity<Review>(e =>
+        {
+            e.HasOne(r => r.Player).WithMany().HasForeignKey(r => r.PlayerId);
+            e.HasOne(r => r.Venue).WithMany().HasForeignKey(r => r.VenueId);
+            e.HasIndex(r => new { r.PlayerId, r.VenueId }).IsUnique();
         });
     }
 }
