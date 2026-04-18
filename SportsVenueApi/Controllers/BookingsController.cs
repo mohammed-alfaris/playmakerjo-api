@@ -20,13 +20,20 @@ public class BookingsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly NotificationService _notifications;
+    private readonly SettingsService _settings;
     private readonly ILogger<BookingsController> _logger;
     private readonly string _uploadsBaseUrl;
 
-    public BookingsController(AppDbContext db, NotificationService notifications, ILogger<BookingsController> logger, IConfiguration config)
+    public BookingsController(
+        AppDbContext db,
+        NotificationService notifications,
+        SettingsService settings,
+        ILogger<BookingsController> logger,
+        IConfiguration config)
     {
         _db = db;
         _notifications = notifications;
+        _settings = settings;
         _logger = logger;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
     }
@@ -240,11 +247,12 @@ public class BookingsController : ControllerBase
                 return Forbid();
         }
 
-        // Calculate amounts + revenue split
+        // Calculate amounts + revenue split (platform fee read from settings)
+        var platformFee = await _settings.GetPlatformFeePercentageAsync();
         var totalAmount = venue.PricePerHour * req.Duration / 60.0;
         var depositAmount = totalAmount * (venue.DepositPercentage / 100.0);
-        var systemFeePercentage = isManual ? 0.0 : PlatformConstants.SystemFeePercentage;
-        var systemFee = isManual ? 0.0 : totalAmount * (PlatformConstants.SystemFeePercentage / 100.0);
+        var systemFeePercentage = isManual ? 0.0 : platformFee;
+        var systemFee = isManual ? 0.0 : totalAmount * (platformFee / 100.0);
         var ownerAmount = totalAmount - systemFee;
 
         var booking = new Booking
@@ -691,9 +699,10 @@ public class BookingsController : ControllerBase
         if (validDates.Count == 0)
             return BadRequest(new ApiResponse<object> { Success = false, Message = "All occurrences conflict with existing bookings" });
 
+        var platformFee = await _settings.GetPlatformFeePercentageAsync();
         var totalAmount = venue.PricePerHour * req.Duration / 60.0;
         var depositAmount = totalAmount * (venue.DepositPercentage / 100.0);
-        var systemFee = totalAmount * (PlatformConstants.SystemFeePercentage / 100.0);
+        var systemFee = totalAmount * (platformFee / 100.0);
         var ownerAmount = totalAmount - systemFee;
 
         var group = new RecurringBookingGroup
@@ -724,7 +733,7 @@ public class BookingsController : ControllerBase
             Amount = totalAmount,
             TotalAmount = totalAmount,
             DepositAmount = depositAmount,
-            SystemFeePercentage = PlatformConstants.SystemFeePercentage,
+            SystemFeePercentage = platformFee,
             SystemFee = systemFee,
             OwnerAmount = ownerAmount,
             PaymentMethod = req.PaymentMethod,

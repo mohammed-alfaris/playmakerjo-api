@@ -57,6 +57,7 @@ if (builder.Environment.IsProduction() && knownJwtPlaceholders.Contains(secretKe
         "the Jwt__SecretKey environment variable.");
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddScoped<NotificationService>();
+builder.Services.AddScoped<SettingsService>();
 
 // Firebase Admin SDK
 var firebaseCredPath = builder.Configuration["Firebase:CredentialFile"];
@@ -164,6 +165,22 @@ using (var scope = app.Services.CreateScope())
     catch (Exception ex)
     {
         Log.Warning(ex, "UTF-8 charset migration warning (non-fatal)");
+    }
+
+    // Seed the singleton platform_settings row if missing so GET /platform/status
+    // responds correctly even before any admin has opened the Settings page.
+    try
+    {
+        if (!await db.PlatformSettings.AnyAsync(s => s.Id == 1))
+        {
+            db.PlatformSettings.Add(new SportsVenueApi.Models.PlatformSettings { Id = 1 });
+            await db.SaveChangesAsync();
+            Log.Information("Seeded default platform_settings row (id=1)");
+        }
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Could not seed platform_settings (non-fatal — table may not exist yet)");
     }
 }
 
