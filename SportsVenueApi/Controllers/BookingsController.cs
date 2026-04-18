@@ -230,10 +230,21 @@ public class BookingsController : ControllerBase
         if (req.PaymentMethod == "stripe")
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Card payments coming soon. Please use CliQ." });
 
+        // Manual (walk-in) bookings: only super_admin or the venue's owner may create them.
+        // They skip the payment flow entirely — confirmed immediately, 0% platform fee.
+        var isManual = req.IsManual;
+        if (isManual)
+        {
+            var allowed = UserRole == "super_admin" || (UserRole == "venue_owner" && venue.OwnerId == UserId);
+            if (!allowed)
+                return Forbid();
+        }
+
         // Calculate amounts + revenue split
         var totalAmount = venue.PricePerHour * req.Duration / 60.0;
         var depositAmount = totalAmount * (venue.DepositPercentage / 100.0);
-        var systemFee = totalAmount * (PlatformConstants.SystemFeePercentage / 100.0);
+        var systemFeePercentage = isManual ? 0.0 : PlatformConstants.SystemFeePercentage;
+        var systemFee = isManual ? 0.0 : totalAmount * (PlatformConstants.SystemFeePercentage / 100.0);
         var ownerAmount = totalAmount - systemFee;
 
         var booking = new Booking
@@ -247,13 +258,14 @@ public class BookingsController : ControllerBase
             Amount = totalAmount,
             TotalAmount = totalAmount,
             DepositAmount = depositAmount,
-            SystemFeePercentage = PlatformConstants.SystemFeePercentage,
+            SystemFeePercentage = systemFeePercentage,
             SystemFee = systemFee,
             OwnerAmount = ownerAmount,
             PaymentMethod = req.PaymentMethod,
             Notes = req.Notes,
-            Status = "pending_payment",
-            DepositPaid = false,
+            Status = isManual ? "confirmed" : "pending_payment",
+            DepositPaid = isManual,
+            AmountPaid = isManual ? totalAmount : 0,
         };
 
         _db.Bookings.Add(booking);

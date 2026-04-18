@@ -141,6 +141,14 @@ public class CreateBookingRequest
 
     [JsonPropertyName("notes")]
     public string? Notes { get; set; }
+
+    /// <summary>
+    /// Admin/owner-created walk-in booking. When true the booking is created
+    /// as "confirmed" immediately and the platform fee is 0 (100% goes to the owner).
+    /// Only honoured for super_admin or the venue's own owner.
+    /// </summary>
+    [JsonPropertyName("isManual")]
+    public bool IsManual { get; set; }
 }
 
 public class CreateRecurringBookingRequest
