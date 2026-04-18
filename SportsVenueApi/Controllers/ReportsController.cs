@@ -23,6 +23,67 @@ public class ReportsController : ControllerBase
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
 
+    private const int SparklineDays = 14;
+
+    /// <summary>
+    /// Compute per-day totals for the last <paramref name="days"/> days (oldest → newest),
+    /// filling in zeros for days with no bookings. <paramref name="venueIds"/> null → all venues.
+    /// </summary>
+    private async Task<SummarySparklines> ComputeSparklinesAsync(List<string>? venueIds, int days, bool includeSystemRevenue)
+    {
+        var since = DateTime.UtcNow.Date.AddDays(-(days - 1));
+
+        var query = _db.Bookings.Where(b => b.Date >= since);
+        if (venueIds != null)
+            query = query.Where(b => venueIds.Contains(b.VenueId));
+
+        // Split into two passes: one for counts (all statuses) and one for revenue (completed only).
+        var daily = await query
+            .GroupBy(b => b.Date.Date)
+            .Select(g => new
+            {
+                Day = g.Key,
+                Bookings = g.Count(),
+                Revenue = g.Where(x => x.Status == "completed").Sum(x => (double?)x.Amount) ?? 0,
+                OwnerRevenue = g.Where(x => x.Status == "completed").Sum(x => (double?)x.OwnerAmount) ?? 0,
+                SystemRevenue = g.Where(x => x.Status == "completed").Sum(x => (double?)x.SystemFee) ?? 0,
+            })
+            .ToListAsync();
+
+        var byDay = daily.ToDictionary(d => d.Day);
+
+        var revenue = new List<double>(days);
+        var systemRevenue = new List<double>(days);
+        var ownerRevenue = new List<double>(days);
+        var bookings = new List<double>(days);
+
+        for (var d = since; d <= DateTime.UtcNow.Date; d = d.AddDays(1))
+        {
+            if (byDay.TryGetValue(d, out var day))
+            {
+                revenue.Add(day.Revenue);
+                systemRevenue.Add(includeSystemRevenue ? day.SystemRevenue : 0);
+                ownerRevenue.Add(day.OwnerRevenue);
+                bookings.Add(day.Bookings);
+            }
+            else
+            {
+                revenue.Add(0);
+                systemRevenue.Add(0);
+                ownerRevenue.Add(0);
+                bookings.Add(0);
+            }
+        }
+
+        return new SummarySparklines
+        {
+            Revenue = revenue,
+            SystemRevenue = systemRevenue,
+            OwnerRevenue = ownerRevenue,
+            Bookings = bookings,
+        };
+    }
+
     [HttpGet("summary")]
     public async Task<IActionResult> Summary([FromQuery] string? owner_id = null)
     {
@@ -43,6 +104,7 @@ public class ReportsController : ControllerBase
             var completedBookings = _db.Bookings
                 .Where(b => venueIds.Contains(b.VenueId) && b.Status == "completed");
             var ownerRevenue = await completedBookings.SumAsync(b => b.OwnerAmount);
+            var sparklines = await ComputeSparklinesAsync(venueIds, SparklineDays, includeSystemRevenue: false);
 
             return Ok(new ApiResponse<SummaryResponse>
             {
@@ -58,7 +120,8 @@ public class ReportsController : ControllerBase
                     RevenueChange = 12.4,
                     BookingsChange = 8.1,
                     VenuesChange = 14.3,
-                    UsersChange = 5.0
+                    UsersChange = 5.0,
+                    Sparklines = sparklines,
                 }
             });
         }
@@ -68,6 +131,7 @@ public class ReportsController : ControllerBase
         var grossRevenue = await completed.SumAsync(b => b.Amount);
         var systemRevenue = await completed.SumAsync(b => b.SystemFee);
         var totalOwnerRevenue = await completed.SumAsync(b => b.OwnerAmount);
+        var adminSparklines = await ComputeSparklinesAsync(venueIds: null, SparklineDays, includeSystemRevenue: true);
 
         return Ok(new ApiResponse<SummaryResponse>
         {
@@ -83,7 +147,8 @@ public class ReportsController : ControllerBase
                 RevenueChange = 12.4,
                 BookingsChange = 8.1,
                 VenuesChange = 14.3,
-                UsersChange = 5.0
+                UsersChange = 5.0,
+                Sparklines = adminSparklines,
             }
         });
     }

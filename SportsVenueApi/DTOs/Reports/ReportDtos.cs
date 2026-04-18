@@ -36,6 +36,28 @@ public class SummaryResponse
 
     [JsonPropertyName("usersChange")]
     public double UsersChange { get; set; }
+
+    /// <summary>
+    /// Last 14 days of daily values for each metric, oldest → newest.
+    /// Used to render inline sparklines on KPI cards. Null/empty when no data.
+    /// </summary>
+    [JsonPropertyName("sparklines")]
+    public SummarySparklines? Sparklines { get; set; }
+}
+
+public class SummarySparklines
+{
+    [JsonPropertyName("revenue")]
+    public List<double> Revenue { get; set; } = new();
+
+    [JsonPropertyName("systemRevenue")]
+    public List<double> SystemRevenue { get; set; } = new();
+
+    [JsonPropertyName("ownerRevenue")]
+    public List<double> OwnerRevenue { get; set; } = new();
+
+    [JsonPropertyName("bookings")]
+    public List<double> Bookings { get; set; } = new();
 }
 
 public class RevenueChartPoint
