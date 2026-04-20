@@ -18,6 +18,8 @@ public class AppDbContext : DbContext
     public DbSet<Favorite> Favorites => Set<Favorite>();
     public DbSet<Review> Reviews => Set<Review>();
     public DbSet<PlatformSettings> PlatformSettings => Set<PlatformSettings>();
+    public DbSet<PlayerWaitlist> PlayerWaitlist => Set<PlayerWaitlist>();
+    public DbSet<VenueWaitlist> VenueWaitlist => Set<VenueWaitlist>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
