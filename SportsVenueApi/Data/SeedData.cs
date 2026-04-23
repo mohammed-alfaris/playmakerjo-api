@@ -49,16 +49,18 @@ public static class SeedData
             new() { Id = "v8", Name = "Madaba Aqua Sports", OwnerId = "u2", City = "Madaba", Address = "King's Highway, Madaba", PricePerHour = 40, Status = "active", Description = "Olympic-size indoor swimming pool.", Latitude = 31.7164, Longitude = 35.7934, CreatedAt = new DateTime(2024, 5, 15, 11, 0, 0, DateTimeKind.Utc) },
         };
 
-        // Default operating hours (8am-10pm every day)
+        // Default operating hours (8am-10pm every day).
+        // Keys are full day names to match the dashboard form and the
+        // slot-generation endpoint lookup.
         var defaultHours = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object>
         {
-            { "sun", new { open = "08:00", close = "22:00" } },
-            { "mon", new { open = "08:00", close = "22:00" } },
-            { "tue", new { open = "08:00", close = "22:00" } },
-            { "wed", new { open = "08:00", close = "22:00" } },
-            { "thu", new { open = "08:00", close = "22:00" } },
-            { "fri", new { open = "10:00", close = "23:00" } },
-            { "sat", new { open = "10:00", close = "23:00" } }
+            { "sunday",    new { open = "08:00", close = "22:00" } },
+            { "monday",    new { open = "08:00", close = "22:00" } },
+            { "tuesday",   new { open = "08:00", close = "22:00" } },
+            { "wednesday", new { open = "08:00", close = "22:00" } },
+            { "thursday",  new { open = "08:00", close = "22:00" } },
+            { "friday",    new { open = "10:00", close = "23:00" } },
+            { "saturday",  new { open = "10:00", close = "23:00" } }
         });
 
         // Set sports, images, operating hours, and cliq aliases

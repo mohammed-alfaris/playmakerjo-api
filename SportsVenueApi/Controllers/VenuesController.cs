@@ -304,22 +304,41 @@ public class VenuesController : ControllerBase
         if (string.IsNullOrEmpty(date) || !DateTime.TryParse(date, out var bookingDate))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid or missing date. Use YYYY-MM-DD" });
 
-        // Get operating hours for the requested day
-        var dayName = bookingDate.DayOfWeek.ToString().ToLower()[..3];
+        // Get operating hours for the requested day.
+        // The dashboard stores keys as full day names ("monday", "tuesday", ...)
+        // but older seed data used 3-letter abbreviations ("mon", "tue", ...).
+        // Accept both so legacy venues and newly-edited ones both work.
+        var dayFull  = bookingDate.DayOfWeek.ToString().ToLower();           // "thursday"
+        var dayShort = dayFull[..3];                                          // "thu"
         OperatingHoursInfo? hours = null;
 
         var operatingHours = venue.OperatingHours;
-        if (operatingHours != null && operatingHours.TryGetValue(dayName, out var dayHoursObj))
+        object? dayHoursObj = null;
+        if (operatingHours != null)
+        {
+            if (!operatingHours.TryGetValue(dayFull, out dayHoursObj))
+                operatingHours.TryGetValue(dayShort, out dayHoursObj);
+        }
+        if (dayHoursObj != null)
         {
             var dayHoursJson = JsonSerializer.Serialize(dayHoursObj);
-            var dayHours = JsonSerializer.Deserialize<Dictionary<string, string>>(dayHoursJson);
-            if (dayHours != null)
+            var dayHours = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dayHoursJson);
+            // Skip the day entirely when the admin marked it closed.
+            var isClosed = dayHours != null
+                && dayHours.TryGetValue("closed", out var closedEl)
+                && closedEl.ValueKind == JsonValueKind.True;
+            if (dayHours != null && !isClosed)
             {
-                hours = new OperatingHoursInfo
+                string GetStr(string k, string fallback)
+                    => dayHours.TryGetValue(k, out var el) && el.ValueKind == JsonValueKind.String
+                        ? el.GetString() ?? fallback
+                        : fallback;
+                var openStr  = GetStr("open", "");
+                var closeStr = GetStr("close", "");
+                if (!string.IsNullOrEmpty(openStr) && !string.IsNullOrEmpty(closeStr))
                 {
-                    Open = dayHours.GetValueOrDefault("open", "08:00"),
-                    Close = dayHours.GetValueOrDefault("close", "22:00")
-                };
+                    hours = new OperatingHoursInfo { Open = openStr, Close = closeStr };
+                }
             }
         }
 
