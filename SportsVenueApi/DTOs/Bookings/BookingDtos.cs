@@ -43,6 +43,12 @@ public class BookingResponse
     [JsonPropertyName("sport")]
     public string? Sport { get; set; }
 
+    [JsonPropertyName("pitchId")]
+    public string? PitchId { get; set; }
+
+    [JsonPropertyName("pitchSize")]
+    public string? PitchSize { get; set; }
+
     [JsonPropertyName("date")]
     public string Date { get; set; } = "";
 
@@ -127,6 +133,12 @@ public class CreateBookingRequest
     [JsonPropertyName("sport")]
     public string Sport { get; set; } = "";
 
+    [JsonPropertyName("pitchId")]
+    public string? PitchId { get; set; }  // Required on venues with >1 pitch for the chosen sport
+
+    [JsonPropertyName("pitchSize")]
+    public string? PitchSize { get; set; }  // "5" | "6" | "7" | "8" | "11" — required on subdividable pitches
+
     [JsonPropertyName("date")]
     public string Date { get; set; } = "";  // "2025-04-10"
 
@@ -158,6 +170,12 @@ public class CreateRecurringBookingRequest
 
     [JsonPropertyName("sport")]
     public string Sport { get; set; } = "";
+
+    [JsonPropertyName("pitchId")]
+    public string? PitchId { get; set; }
+
+    [JsonPropertyName("pitchSize")]
+    public string? PitchSize { get; set; }
 
     [JsonPropertyName("startDate")]
     public string StartDate { get; set; } = "";
@@ -224,6 +242,60 @@ public class AvailableSlotsResponse
 
     [JsonPropertyName("depositPercentage")]
     public double DepositPercentage { get; set; }
+
+    [JsonPropertyName("parentSize")]
+    public string? ParentSize { get; set; }
+
+    [JsonPropertyName("offeredSizes")]
+    public List<string> OfferedSizes { get; set; } = [];
+
+    [JsonPropertyName("sizePrices")]
+    public Dictionary<string, double> SizePrices { get; set; } = [];
+
+    [JsonPropertyName("capacityUnits")]
+    public int CapacityUnits { get; set; } = 1;
+
+    /// <summary>
+    /// Per-pitch availability for multi-pitch venues. When <c>pitchId</c> is
+    /// specified on the request, this is omitted (the top-level fields describe
+    /// that single pitch). Otherwise this carries availability for every pitch
+    /// on the venue so the client can show pitch-by-pitch timeline/selection.
+    /// </summary>
+    [JsonPropertyName("pitches")]
+    public List<PitchAvailability>? Pitches { get; set; }
+}
+
+public class PitchAvailability
+{
+    [JsonPropertyName("pitchId")]
+    public string PitchId { get; set; } = "";
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    [JsonPropertyName("sport")]
+    public string Sport { get; set; } = "";
+
+    [JsonPropertyName("parentSize")]
+    public string? ParentSize { get; set; }
+
+    [JsonPropertyName("offeredSizes")]
+    public List<string> OfferedSizes { get; set; } = [];
+
+    [JsonPropertyName("sizePrices")]
+    public Dictionary<string, double> SizePrices { get; set; } = [];
+
+    [JsonPropertyName("pricePerHour")]
+    public double PricePerHour { get; set; }
+
+    [JsonPropertyName("capacityUnits")]
+    public int CapacityUnits { get; set; } = 1;
+
+    [JsonPropertyName("operatingHours")]
+    public OperatingHoursInfo? OperatingHours { get; set; }
+
+    [JsonPropertyName("bookedSlots")]
+    public List<BookedSlotInfo> BookedSlots { get; set; } = [];
 }
 
 public class OperatingHoursInfo
@@ -245,4 +317,13 @@ public class BookedSlotInfo
 
     [JsonPropertyName("sport")]
     public string? Sport { get; set; }
+
+    [JsonPropertyName("pitchId")]
+    public string? PitchId { get; set; }
+
+    [JsonPropertyName("pitchSize")]
+    public string? PitchSize { get; set; }
+
+    [JsonPropertyName("unitWeight")]
+    public int UnitWeight { get; set; } = 1;
 }

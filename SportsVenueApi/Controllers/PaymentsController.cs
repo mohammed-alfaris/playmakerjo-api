@@ -23,7 +23,8 @@ public class PaymentsController : ControllerBase
     public async Task<IActionResult> List(
         [FromQuery] int page = 1,
         [FromQuery] int limit = 20,
-        [FromQuery] string? status = null)
+        [FromQuery] string? status = null,
+        [FromQuery(Name = "venue_id")] string? venueId = null)
     {
         if (UserRole != "super_admin")
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Admin only" });
@@ -32,6 +33,12 @@ public class PaymentsController : ControllerBase
 
         if (!string.IsNullOrEmpty(status))
             baseQuery = baseQuery.Where(p => p.Status == status);
+
+        if (!string.IsNullOrEmpty(venueId))
+        {
+            // Payments don't carry venue_id directly; filter via the linked booking.
+            baseQuery = baseQuery.Where(p => p.Booking.VenueId == venueId);
+        }
 
         var total = await baseQuery.CountAsync();
         var payments = await baseQuery

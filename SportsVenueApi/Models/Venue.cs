@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using SportsVenueApi.DTOs.Venues;
 
 namespace SportsVenueApi.Models;
 
@@ -65,6 +66,37 @@ public class Venue
     [Column("deposit_percentage")]
     public double DepositPercentage { get; set; } = 20.0;
 
+    [Column("parent_size")]
+    [MaxLength(8)]
+    public string? ParentSize { get; set; }
+
+    [Column("sub_sizes", TypeName = "longtext")]
+    public string SubSizesJson { get; set; } = "[]";
+
+    [Column("size_prices", TypeName = "longtext")]
+    public string SizePricesJson { get; set; } = "{}";
+
+    // Per-sport configuration. When a venue offers multiple sports and each
+    // sport has its own price / schedule (optionally split config for football),
+    // this holds that map. Keyed by sport name. Empty object = legacy single-
+    // sport mode — fall back to the venue-level PricePerHour / OperatingHours.
+    [Column("sports_config", TypeName = "longtext")]
+    public string SportsConfigJson { get; set; } = "{}";
+
+    // When true, bookings for different sports don't collide with each other
+    // (e.g. one football pitch + one basketball court side-by-side). Default
+    // false = all sports share the physical space — any booking blocks every
+    // sport at that time.
+    [Column("sports_isolated")]
+    public bool SportsIsolated { get; set; } = false;
+
+    // Multi-pitch venues: a JSON array of physically independent pitches, each
+    // with its own sport/size/price/(optional) operating hours. Empty = legacy
+    // single-pitch venue — resolved at read time via PitchSizes.ResolvedPitches(v)
+    // which synthesises one implicit pitch per entry in Sports. See PitchDto.
+    [Column("pitches", TypeName = "longtext")]
+    public string PitchesJson { get; set; } = "[]";
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
@@ -90,5 +122,43 @@ public class Venue
     {
         get => System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(OperatingHoursJson);
         set => OperatingHoursJson = System.Text.Json.JsonSerializer.Serialize(value ?? new Dictionary<string, object>());
+    }
+
+    [NotMapped]
+    public List<string> SubSizes
+    {
+        // Tolerate legacy rows that landed with empty-string or null JSON after
+        // the AddSubdividablePitch migration (MySQL defaults longtext to "").
+        get => string.IsNullOrWhiteSpace(SubSizesJson)
+            ? []
+            : System.Text.Json.JsonSerializer.Deserialize<List<string>>(SubSizesJson) ?? [];
+        set => SubSizesJson = System.Text.Json.JsonSerializer.Serialize(value);
+    }
+
+    [NotMapped]
+    public Dictionary<string, double> SizePrices
+    {
+        get => string.IsNullOrWhiteSpace(SizePricesJson)
+            ? []
+            : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, double>>(SizePricesJson) ?? [];
+        set => SizePricesJson = System.Text.Json.JsonSerializer.Serialize(value);
+    }
+
+    [NotMapped]
+    public Dictionary<string, SportConfigDto> SportsConfig
+    {
+        get => string.IsNullOrWhiteSpace(SportsConfigJson)
+            ? []
+            : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, SportConfigDto>>(SportsConfigJson) ?? [];
+        set => SportsConfigJson = System.Text.Json.JsonSerializer.Serialize(value ?? new Dictionary<string, SportConfigDto>());
+    }
+
+    [NotMapped]
+    public List<PitchDto> Pitches
+    {
+        get => string.IsNullOrWhiteSpace(PitchesJson)
+            ? []
+            : System.Text.Json.JsonSerializer.Deserialize<List<PitchDto>>(PitchesJson) ?? [];
+        set => PitchesJson = System.Text.Json.JsonSerializer.Serialize(value ?? new List<PitchDto>());
     }
 }

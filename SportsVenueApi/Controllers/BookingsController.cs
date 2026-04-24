@@ -7,6 +7,7 @@ using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Bookings;
+using SportsVenueApi.DTOs.Venues;
 using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
 using SportsVenueApi.Services;
@@ -48,6 +49,7 @@ public class BookingsController : ControllerBase
         [FromQuery] int limit = 20,
         [FromQuery] string? status = null,
         [FromQuery] string? venue_id = null,
+        [FromQuery] string? pitch_id = null,
         [FromQuery] string? owner_id = null,
         [FromQuery(Name = "from")] string? fromDate = null,
         [FromQuery(Name = "to")] string? toDate = null)
@@ -66,6 +68,38 @@ public class BookingsController : ControllerBase
 
         if (!string.IsNullOrEmpty(venue_id))
             baseQuery = baseQuery.Where(b => b.VenueId == venue_id);
+
+        // Pitch filter. Synthetic legacy pitch IDs ("legacy-{venueId}-{sport}")
+        // never hit the DB — they map to "rows on that venue+sport whose
+        // pitch_id is NULL", which is the server-side projection contract.
+        if (!string.IsNullOrEmpty(pitch_id))
+        {
+            if (IsLegacyPitchId(pitch_id))
+            {
+                // Expected format: "legacy-{venueId}-{sport}" — the last dash
+                // segment is the sport name.
+                var tail = pitch_id.Substring("legacy-".Length);
+                var dash = tail.LastIndexOf('-');
+                if (dash > 0)
+                {
+                    var legacyVenueId = tail.Substring(0, dash);
+                    var legacySport = tail.Substring(dash + 1);
+                    baseQuery = baseQuery.Where(b =>
+                        b.VenueId == legacyVenueId &&
+                        b.Sport == legacySport &&
+                        b.PitchId == null);
+                }
+                else
+                {
+                    // Malformed legacy id — return no rows rather than the full set.
+                    baseQuery = baseQuery.Where(b => false);
+                }
+            }
+            else
+            {
+                baseQuery = baseQuery.Where(b => b.PitchId == pitch_id);
+            }
+        }
 
         if (!string.IsNullOrEmpty(fromDate) && DateTime.TryParse(fromDate, out var from))
             baseQuery = baseQuery.Where(b => b.Date >= from);
@@ -207,30 +241,79 @@ public class BookingsController : ControllerBase
             }
         }
 
-        // Check for slot conflicts
+        // Resolve which pitch this booking lives on.
+        var pitchResolution = ResolvePitchForBooking(venue, req.PitchId, req.Sport);
+        if (pitchResolution.Error != null)
+            return pitchResolution.Status == 404
+                ? NotFound(new ApiResponse<object> { Success = false, Message = pitchResolution.Error })
+                : BadRequest(new ApiResponse<object> { Success = false, Message = pitchResolution.Error });
+        var pitch = pitchResolution.Pitch!;
+
+        // Pitch-size validation. Subdivision is football-only and carried on the pitch.
+        string? pitchSize = null;
+        if (pitch.ParentSize != null)
+        {
+            pitchSize = req.PitchSize ?? pitch.ParentSize;
+            var offered = PitchSizes.OfferedSizes(pitch);
+            if (!offered.Contains(pitchSize))
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = $"Pitch '{pitch.Name}' does not offer {pitchSize}-aside. Offered: {string.Join(", ", offered)}"
+                });
+        }
+
+        // Overlap detection is scoped per-pitch. A booking on Pitch 1 never blocks
+        // Pitch 2. Inside the pitch, subdividable pitches use the capacity-unit pool
+        // (e.g. 11-aside = 4 units, 8 = 2, 6 = 1), non-subdividable pitches use the
+        // naive any-overlap rule.
         var endTime = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
-        var existingBookings = await _db.Bookings
+        var sameDayBookings = await _db.Bookings
             .Where(b => b.VenueId == req.VenueId
                 && b.Date.Date == bookingDate.Date
                 && b.Status != "cancelled"
                 && b.StartTime != null)
             .ToListAsync();
+        var pitchBookings = sameDayBookings
+            .Where(b => BookingOnPitch(b, venue, pitch))
+            .ToList();
 
-        foreach (var existing in existingBookings)
+        var capacity = PitchSizes.CapacityOf(pitch);
+        var requestedWeight = pitchSize != null ? PitchSizes.WeightOf(pitchSize) : 1;
+        var isSubdividable = pitch.ParentSize != null && (pitch.SubSizes?.Count ?? 0) > 0;
+
+        var overlapping = new List<Booking>();
+        foreach (var existing in pitchBookings)
         {
-            if (TimeSpan.TryParse(existing.StartTime, out var existingStart))
+            if (!TimeSpan.TryParse(existing.StartTime, out var existingStart)) continue;
+            var existingEnd = existingStart + TimeSpan.FromMinutes(existing.Duration);
+            if (startTimeSpan < existingEnd && endTime > existingStart)
+                overlapping.Add(existing);
+        }
+
+        if (isSubdividable)
+        {
+            var usedUnits = overlapping.Sum(b => PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize));
+            if (usedUnits + requestedWeight > capacity)
             {
-                var existingEnd = existingStart + TimeSpan.FromMinutes(existing.Duration);
-                // Check overlap: new start < existing end AND new end > existing start
-                if (startTimeSpan < existingEnd && endTime > existingStart)
+                var remaining = capacity - usedUnits;
+                return Conflict(new ApiResponse<object>
                 {
-                    return Conflict(new ApiResponse<object>
-                    {
-                        Success = false,
-                        Message = $"Time slot conflicts with an existing booking ({existing.StartTime} - {existingEnd:hh\\:mm})"
-                    });
-                }
+                    Success = false,
+                    Message = $"This size is not available at that time. {remaining} of {capacity} units remain on {pitch.Name}."
+                });
             }
+        }
+        else if (overlapping.Count > 0)
+        {
+            var first = overlapping[0];
+            var existingStart = TimeSpan.Parse(first.StartTime!);
+            var existingEnd = existingStart + TimeSpan.FromMinutes(first.Duration);
+            return Conflict(new ApiResponse<object>
+            {
+                Success = false,
+                Message = $"Time slot conflicts with an existing booking on {pitch.Name} ({first.StartTime} - {existingEnd:hh\\:mm})"
+            });
         }
 
         // Reject card payments (coming soon)
@@ -247,9 +330,20 @@ public class BookingsController : ControllerBase
                 return Forbid();
         }
 
-        // Calculate amounts + revenue split (platform fee read from settings)
+        // Calculate amounts + revenue split (platform fee read from settings).
+        // Price resolution order, pitch-scoped:
+        //   1. pitch.sizePrices[pitchSize]  (per-pitch, per-size)
+        //   2. pitch.pricePerHour           (per-pitch default)
+        //   3. venue.pricePerHour           (venue-level fallback)
         var platformFee = await _settings.GetPlatformFeePercentageAsync();
-        var totalAmount = venue.PricePerHour * req.Duration / 60.0;
+        double hourlyPrice;
+        if (pitchSize != null && pitch.SizePrices.TryGetValue(pitchSize, out var perSize))
+            hourlyPrice = perSize;
+        else if (pitch.PricePerHour > 0)
+            hourlyPrice = pitch.PricePerHour;
+        else
+            hourlyPrice = venue.PricePerHour;
+        var totalAmount = hourlyPrice * req.Duration / 60.0;
         var depositAmount = totalAmount * (venue.DepositPercentage / 100.0);
         var systemFeePercentage = isManual ? 0.0 : platformFee;
         var systemFee = isManual ? 0.0 : totalAmount * (platformFee / 100.0);
@@ -260,6 +354,8 @@ public class BookingsController : ControllerBase
             VenueId = req.VenueId,
             PlayerId = UserId,
             Sport = req.Sport,
+            PitchId = IsLegacyPitchId(pitch.Id) ? null : pitch.Id,
+            PitchSize = pitchSize,
             Date = bookingDate,
             StartTime = req.StartTime,
             Duration = req.Duration,
@@ -627,6 +723,30 @@ public class BookingsController : ControllerBase
         var stepDays = recurType == "biweekly" ? 14 : 7;
         var policy = (req.ConflictPolicy ?? "skip").ToLower();
 
+        // Resolve which pitch this recurring series will live on (same rules as
+        // one-off bookings: explicit pitchId if given, single-match-sport otherwise,
+        // else PITCH_REQUIRED).
+        var pitchResolution = ResolvePitchForBooking(venue, req.PitchId, req.Sport);
+        if (pitchResolution.Error != null)
+            return pitchResolution.Status == 404
+                ? NotFound(new ApiResponse<object> { Success = false, Message = pitchResolution.Error })
+                : BadRequest(new ApiResponse<object> { Success = false, Message = pitchResolution.Error });
+        var pitch = pitchResolution.Pitch!;
+
+        // Pitch-size validation. Subdivision is football-only and carried on the pitch.
+        string? pitchSize = null;
+        if (pitch.ParentSize != null)
+        {
+            pitchSize = req.PitchSize ?? pitch.ParentSize;
+            var offered = PitchSizes.OfferedSizes(pitch);
+            if (!offered.Contains(pitchSize))
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = $"Pitch '{pitch.Name}' does not offer {pitchSize}-aside. Offered: {string.Join(", ", offered)}"
+                });
+        }
+
         // Compute occurrence dates
         var occurrences = new List<DateTime>();
         for (var d = startDate; d <= endDate; d = d.AddDays(stepDays))
@@ -635,10 +755,23 @@ public class BookingsController : ControllerBase
         if (occurrences.Count == 0)
             return BadRequest(new ApiResponse<object> { Success = false, Message = "No occurrences in the selected range" });
 
-        // Validate operating hours for that day-of-week (same every week)
+        // Validate operating hours for that day-of-week (same every week).
+        // Pitch-level operating_hours (when set) take precedence over the venue's.
         var endTime = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
         var dayName = startDate.DayOfWeek.ToString().ToLower()[..3];
-        var operatingHours = venue.OperatingHours;
+        Dictionary<string, object>? operatingHours = null;
+        if (pitch.OperatingHours is Dictionary<string, object> pitchHoursDict)
+            operatingHours = pitchHoursDict;
+        else if (pitch.OperatingHours != null)
+        {
+            try
+            {
+                var json = JsonSerializer.Serialize(pitch.OperatingHours);
+                operatingHours = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            }
+            catch { /* fall through to venue hours */ }
+        }
+        operatingHours ??= venue.OperatingHours;
         if (operatingHours != null && operatingHours.TryGetValue(dayName, out var dayHoursObj))
         {
             var dayHoursJson = JsonSerializer.Serialize(dayHoursObj);
@@ -656,32 +789,52 @@ public class BookingsController : ControllerBase
             }
         }
 
-        // Pre-load conflicting bookings in the date range
-        var existing = await _db.Bookings
+        // Pre-load candidate bookings in the date range. Scope to the same pitch
+        // only — bookings on other pitches never block this one. Load everything
+        // same-venue/same-range then filter in-memory via BookingOnPitch so we
+        // pick up legacy rows (pitch_id = NULL) that resolve to this pitch.
+        var existingAll = await _db.Bookings
             .Where(b => b.VenueId == req.VenueId
                 && b.Date >= startDate
                 && b.Date <= endDate
                 && b.Status != "cancelled"
                 && b.StartTime != null)
             .ToListAsync();
+        var existing = existingAll.Where(b => BookingOnPitch(b, venue, pitch)).ToList();
+
+        // Capacity-unit conflict detection inside the pitch: subdividable pitches
+        // sum overlapping unit weights against the pitch's capacity; non-subdividable
+        // pitches fall back to naive any-overlap.
+        var capacity = PitchSizes.CapacityOf(pitch);
+        var requestedWeight = pitchSize != null ? PitchSizes.WeightOf(pitchSize) : 1;
+        var isSubdividable = pitch.ParentSize != null && (pitch.SubSizes?.Count ?? 0) > 0;
 
         var conflictDates = new List<DateTime>();
         var validDates = new List<DateTime>();
         foreach (var date in occurrences)
         {
-            bool conflict = false;
+            var overlaps = new List<Booking>();
             foreach (var ex in existing.Where(e => e.Date.Date == date.Date))
             {
                 if (TimeSpan.TryParse(ex.StartTime, out var exStart))
                 {
                     var exEnd = exStart + TimeSpan.FromMinutes(ex.Duration);
                     if (startTimeSpan < exEnd && endTime > exStart)
-                    {
-                        conflict = true;
-                        break;
-                    }
+                        overlaps.Add(ex);
                 }
             }
+
+            bool conflict;
+            if (isSubdividable)
+            {
+                var usedUnits = overlaps.Sum(b => PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize));
+                conflict = usedUnits + requestedWeight > capacity;
+            }
+            else
+            {
+                conflict = overlaps.Count > 0;
+            }
+
             if (conflict) conflictDates.Add(date);
             else validDates.Add(date);
         }
@@ -700,7 +853,18 @@ public class BookingsController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = "All occurrences conflict with existing bookings" });
 
         var platformFee = await _settings.GetPlatformFeePercentageAsync();
-        var totalAmount = venue.PricePerHour * req.Duration / 60.0;
+        // Pitch-scoped price resolution (same order as one-off bookings):
+        //   1. pitch.sizePrices[pitchSize]
+        //   2. pitch.pricePerHour
+        //   3. venue.pricePerHour
+        double hourlyPrice;
+        if (pitchSize != null && pitch.SizePrices.TryGetValue(pitchSize, out var perSize))
+            hourlyPrice = perSize;
+        else if (pitch.PricePerHour > 0)
+            hourlyPrice = pitch.PricePerHour;
+        else
+            hourlyPrice = venue.PricePerHour;
+        var totalAmount = hourlyPrice * req.Duration / 60.0;
         var depositAmount = totalAmount * (venue.DepositPercentage / 100.0);
         var systemFee = totalAmount * (platformFee / 100.0);
         var ownerAmount = totalAmount - systemFee;
@@ -727,6 +891,8 @@ public class BookingsController : ControllerBase
             VenueId = req.VenueId,
             PlayerId = UserId,
             Sport = req.Sport,
+            PitchId = IsLegacyPitchId(pitch.Id) ? null : pitch.Id,
+            PitchSize = pitchSize,
             Date = date,
             StartTime = req.StartTime,
             Duration = req.Duration,
@@ -806,6 +972,16 @@ public class BookingsController : ControllerBase
 
     private BookingResponse ToDto(Booking b, bool includeFullProof = false)
     {
+        var resolvedPitchId = b.PitchId;
+        if (string.IsNullOrEmpty(resolvedPitchId) && b.Venue != null)
+        {
+            // Legacy row: project to the implicit single pitch for that sport so
+            // clients always see a stable `pitchId` and can filter by it.
+            var first = PitchSizes.ResolvedPitches(b.Venue)
+                .FirstOrDefault(p => string.Equals(p.Sport, b.Sport, StringComparison.OrdinalIgnoreCase));
+            resolvedPitchId = first?.Id;
+        }
+
         var dto = new BookingResponse
         {
             Id = b.Id,
@@ -819,6 +995,7 @@ public class BookingsController : ControllerBase
             },
             Player = new PlayerRef { Id = b.Player.Id, Name = b.Player.Name },
             Sport = b.Sport,
+            PitchId = resolvedPitchId,
             Date = b.Date.ToString("yyyy-MM-dd"),
             StartTime = b.StartTime,
             Duration = b.Duration,
@@ -834,6 +1011,7 @@ public class BookingsController : ControllerBase
             PaymentProofNote = b.PaymentProofNote,
             RecurringGroupId = b.RecurringGroupId,
             Status = b.Status,
+            PitchSize = b.PitchSize ?? b.Venue.ParentSize,
             CreatedAt = b.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
         };
 
@@ -851,4 +1029,55 @@ public class BookingsController : ControllerBase
 
         return dto;
     }
+
+    /// <summary>Result of pitch resolution for an incoming booking request.</summary>
+    private sealed class PitchResolution
+    {
+        public PitchDto? Pitch { get; init; }
+        public string? Error { get; init; }
+        public int Status { get; init; } = 400;
+    }
+
+    /// <summary>
+    /// Pick the pitch this booking will live on. Rules:
+    /// - Caller supplied <c>pitchId</c> → that pitch must exist and its sport must match.
+    /// - Caller omitted it → OK when exactly one pitch on the venue offers the sport;
+    ///   otherwise PITCH_REQUIRED so the client knows to prompt.
+    /// </summary>
+    private static PitchResolution ResolvePitchForBooking(Venue venue, string? pitchId, string sport)
+    {
+        var pitches = PitchSizes.ResolvedPitches(venue);
+        if (!string.IsNullOrEmpty(pitchId))
+        {
+            var byId = pitches.FirstOrDefault(p => p.Id == pitchId);
+            if (byId == null)
+                return new PitchResolution { Status = 404, Error = "PITCH_NOT_FOUND" };
+            if (!string.Equals(byId.Sport, sport, StringComparison.OrdinalIgnoreCase))
+                return new PitchResolution { Error = $"Pitch '{byId.Name}' is for {byId.Sport}, not {sport}." };
+            return new PitchResolution { Pitch = byId };
+        }
+
+        var matchingSport = pitches
+            .Where(p => string.Equals(p.Sport, sport, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matchingSport.Count == 1)
+            return new PitchResolution { Pitch = matchingSport[0] };
+        if (matchingSport.Count == 0)
+            return new PitchResolution { Error = $"Venue has no pitch for {sport}." };
+        return new PitchResolution { Error = "PITCH_REQUIRED" };
+    }
+
+    /// <summary>Does this booking belong to this pitch? Mirrors VenuesController.MatchesPitch.</summary>
+    private static bool BookingOnPitch(Booking b, Venue v, PitchDto pitch)
+    {
+        if (!string.IsNullOrEmpty(b.PitchId))
+            return b.PitchId == pitch.Id;
+        var firstOfSport = PitchSizes.ResolvedPitches(v)
+            .FirstOrDefault(p => string.Equals(p.Sport, b.Sport, StringComparison.OrdinalIgnoreCase));
+        return firstOfSport != null && firstOfSport.Id == pitch.Id;
+    }
+
+    /// <summary>Legacy synthesised pitch ids start with "legacy-" and must not hit the DB.</summary>
+    private static bool IsLegacyPitchId(string? id) =>
+        !string.IsNullOrEmpty(id) && id.StartsWith("legacy-", StringComparison.Ordinal);
 }

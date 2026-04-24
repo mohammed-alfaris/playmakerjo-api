@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SportsVenueApi.Data;
 
@@ -11,9 +12,11 @@ using SportsVenueApi.Data;
 namespace SportsVenueApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260424061005_AddPerSportConfig")]
+    partial class AddPerSportConfig
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -82,11 +85,6 @@ namespace SportsVenueApi.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("varchar(50)")
                         .HasColumnName("payment_proof_status");
-
-                    b.Property<string>("PitchId")
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("pitch_id");
 
                     b.Property<string>("PitchSize")
                         .HasMaxLength(8)
@@ -683,11 +681,6 @@ namespace SportsVenueApi.Migrations
                         .HasMaxLength(8)
                         .HasColumnType("varchar(8)")
                         .HasColumnName("parent_size");
-
-                    b.Property<string>("PitchesJson")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("pitches");
 
                     b.Property<double>("PricePerHour")
                         .HasColumnType("double")

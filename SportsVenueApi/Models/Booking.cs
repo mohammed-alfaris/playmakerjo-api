@@ -23,6 +23,14 @@ public class Booking
     [MaxLength(100)]
     public string? Sport { get; set; }
 
+    [Column("pitch_id")]
+    [MaxLength(32)]
+    public string? PitchId { get; set; }  // Multi-pitch: which physical pitch. NULL = legacy (implicit single pitch resolved by sport at read time)
+
+    [Column("pitch_size")]
+    [MaxLength(8)]
+    public string? PitchSize { get; set; }  // "5" | "6" | "7" | "8" | "11". NULL = legacy single-size
+
     [Column("date")]
     public DateTime Date { get; set; }
 
