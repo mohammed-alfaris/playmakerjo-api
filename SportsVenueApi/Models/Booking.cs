@@ -24,8 +24,8 @@ public class Booking
     public string? Sport { get; set; }
 
     [Column("pitch_id")]
-    [MaxLength(32)]
-    public string? PitchId { get; set; }  // Multi-pitch: which physical pitch. NULL = legacy (implicit single pitch resolved by sport at read time)
+    [MaxLength(64)]
+    public string? PitchId { get; set; }  // Multi-pitch: which physical pitch. NULL = legacy (implicit single pitch resolved by sport at read time). 64 chars to fit dashboard-minted full UUIDs (36) and the API's "p_xxxxxxxxxx" mint format.
 
     [Column("pitch_size")]
     [MaxLength(8)]
