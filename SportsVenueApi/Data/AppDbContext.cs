@@ -12,6 +12,7 @@ public class AppDbContext : DbContext
     public DbSet<Booking> Bookings => Set<Booking>();
     public DbSet<Payment> Payments => Set<Payment>();
     public DbSet<RecurringBookingGroup> RecurringBookingGroups => Set<RecurringBookingGroup>();
+    public DbSet<PermanentBooking> PermanentBookings => Set<PermanentBooking>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<DeviceToken> DeviceTokens => Set<DeviceToken>();
     public DbSet<NotificationTemplate> NotificationTemplates => Set<NotificationTemplate>();
@@ -50,6 +51,13 @@ public class AppDbContext : DbContext
         {
             e.HasOne(g => g.Player).WithMany().HasForeignKey(g => g.PlayerId);
             e.HasOne(g => g.Venue).WithMany().HasForeignKey(g => g.VenueId);
+        });
+
+        modelBuilder.Entity<PermanentBooking>(e =>
+        {
+            e.HasOne(p => p.Venue).WithMany().HasForeignKey(p => p.VenueId);
+            // Look-up index for the availability merge: (venue, weekday, status).
+            e.HasIndex(p => new { p.VenueId, p.DayOfWeek, p.Status });
         });
 
         modelBuilder.Entity<Payment>(e =>

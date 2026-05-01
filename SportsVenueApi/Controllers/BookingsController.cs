@@ -278,6 +278,19 @@ public class BookingsController : ControllerBase
             .Where(b => BookingOnPitch(b, venue, pitch))
             .ToList();
 
+        // Owner-managed permanents matching this date's weekday block the slot
+        // exactly like a real booking would. They never produce a Booking row, so
+        // we feed them straight into the same capacity-unit reducer.
+        var dow = (int)bookingDate.DayOfWeek;
+        var sameDayPermanents = await _db.PermanentBookings
+            .Where(p => p.VenueId == req.VenueId
+                && p.Status == "active"
+                && p.DayOfWeek == dow)
+            .ToListAsync();
+        var pitchPermanents = sameDayPermanents
+            .Where(p => PermanentOnPitch(p, venue, pitch))
+            .ToList();
+
         var capacity = PitchSizes.CapacityOf(pitch);
         var requestedWeight = pitchSize != null ? PitchSizes.WeightOf(pitchSize) : 1;
         var isSubdividable = pitch.ParentSize != null && (pitch.SubSizes?.Count ?? 0) > 0;
@@ -290,10 +303,19 @@ public class BookingsController : ControllerBase
             if (startTimeSpan < existingEnd && endTime > existingStart)
                 overlapping.Add(existing);
         }
+        var overlappingPerms = new List<PermanentBooking>();
+        foreach (var perm in pitchPermanents)
+        {
+            if (!TimeSpan.TryParse(perm.StartTime, out var permStart)) continue;
+            var permEnd = permStart + TimeSpan.FromMinutes(perm.Duration);
+            if (startTimeSpan < permEnd && endTime > permStart)
+                overlappingPerms.Add(perm);
+        }
 
         if (isSubdividable)
         {
-            var usedUnits = overlapping.Sum(b => PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize));
+            var usedUnits = overlapping.Sum(b => PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize))
+                          + overlappingPerms.Sum(p => PitchSizes.WeightOf(p.PitchSize ?? pitch.ParentSize));
             if (usedUnits + requestedWeight > capacity)
             {
                 var remaining = capacity - usedUnits;
@@ -304,16 +326,30 @@ public class BookingsController : ControllerBase
                 });
             }
         }
-        else if (overlapping.Count > 0)
+        else if (overlapping.Count > 0 || overlappingPerms.Count > 0)
         {
-            var first = overlapping[0];
-            var existingStart = TimeSpan.Parse(first.StartTime!);
-            var existingEnd = existingStart + TimeSpan.FromMinutes(first.Duration);
-            return Conflict(new ApiResponse<object>
+            if (overlapping.Count > 0)
             {
-                Success = false,
-                Message = $"Time slot conflicts with an existing booking on {pitch.Name} ({first.StartTime} - {existingEnd:hh\\:mm})"
-            });
+                var first = overlapping[0];
+                var existingStart = TimeSpan.Parse(first.StartTime!);
+                var existingEnd = existingStart + TimeSpan.FromMinutes(first.Duration);
+                return Conflict(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = $"Time slot conflicts with an existing booking on {pitch.Name} ({first.StartTime} - {existingEnd:hh\\:mm})"
+                });
+            }
+            else
+            {
+                var first = overlappingPerms[0];
+                var permStart = TimeSpan.Parse(first.StartTime);
+                var permEnd = permStart + TimeSpan.FromMinutes(first.Duration);
+                return Conflict(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = $"Time slot conflicts with a recurring reservation on {pitch.Name} ({first.StartTime} - {permEnd:hh\\:mm})"
+                });
+            }
         }
 
         // Reject card payments (coming soon)
@@ -802,12 +838,32 @@ public class BookingsController : ControllerBase
             .ToListAsync();
         var existing = existingAll.Where(b => BookingOnPitch(b, venue, pitch)).ToList();
 
+        // Owner-managed permanents that fire on the same weekday as this series.
+        // A recurring series on Sunday only has to dodge permanents on Sunday.
+        var seriesDow = (int)startDate.DayOfWeek;
+        var permanentsAll = await _db.PermanentBookings
+            .Where(p => p.VenueId == req.VenueId
+                && p.Status == "active"
+                && p.DayOfWeek == seriesDow)
+            .ToListAsync();
+        var permanents = permanentsAll.Where(p => PermanentOnPitch(p, venue, pitch)).ToList();
+
         // Capacity-unit conflict detection inside the pitch: subdividable pitches
         // sum overlapping unit weights against the pitch's capacity; non-subdividable
         // pitches fall back to naive any-overlap.
         var capacity = PitchSizes.CapacityOf(pitch);
         var requestedWeight = pitchSize != null ? PitchSizes.WeightOf(pitchSize) : 1;
         var isSubdividable = pitch.ParentSize != null && (pitch.SubSizes?.Count ?? 0) > 0;
+
+        // Pre-compute permanent overlaps once (same weekday + time-window doesn't
+        // depend on the specific date).
+        var permOverlaps = permanents.Where(p =>
+        {
+            if (!TimeSpan.TryParse(p.StartTime, out var ps)) return false;
+            var pe = ps + TimeSpan.FromMinutes(p.Duration);
+            return startTimeSpan < pe && endTime > ps;
+        }).ToList();
+        var permUnits = permOverlaps.Sum(p => PitchSizes.WeightOf(p.PitchSize ?? pitch.ParentSize));
 
         var conflictDates = new List<DateTime>();
         var validDates = new List<DateTime>();
@@ -827,12 +883,12 @@ public class BookingsController : ControllerBase
             bool conflict;
             if (isSubdividable)
             {
-                var usedUnits = overlaps.Sum(b => PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize));
+                var usedUnits = overlaps.Sum(b => PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize)) + permUnits;
                 conflict = usedUnits + requestedWeight > capacity;
             }
             else
             {
-                conflict = overlaps.Count > 0;
+                conflict = overlaps.Count > 0 || permOverlaps.Count > 0;
             }
 
             if (conflict) conflictDates.Add(date);
@@ -1075,6 +1131,19 @@ public class BookingsController : ControllerBase
         var firstOfSport = PitchSizes.ResolvedPitches(v)
             .FirstOrDefault(p => string.Equals(p.Sport, b.Sport, StringComparison.OrdinalIgnoreCase));
         return firstOfSport != null && firstOfSport.Id == pitch.Id;
+    }
+
+    /// <summary>
+    /// Permanent bookings carry an explicit pitch_id when the venue has multiple
+    /// pitches. When pitch_id is null we treat the permanent as belonging to the
+    /// only resolved pitch (legacy single-pitch venues).
+    /// </summary>
+    private static bool PermanentOnPitch(PermanentBooking p, Venue v, PitchDto pitch)
+    {
+        if (!string.IsNullOrEmpty(p.PitchId))
+            return p.PitchId == pitch.Id;
+        var resolved = PitchSizes.ResolvedPitches(v);
+        return resolved.Count == 1 && resolved[0].Id == pitch.Id;
     }
 
     /// <summary>Legacy synthesised pitch ids start with "legacy-" and must not hit the DB.</summary>

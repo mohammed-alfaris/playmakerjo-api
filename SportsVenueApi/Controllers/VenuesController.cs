@@ -554,6 +554,15 @@ public class VenuesController : ControllerBase
                 && b.Status != "cancelled")
             .ToListAsync();
 
+        // Active owner-managed permanents matching this date's weekday. We treat
+        // them as virtual "always booked" rules — the conflict checker sees them
+        // as additional booked slots without ever materialising into the bookings
+        // table.
+        var dow = (int)bookingDate.DayOfWeek;
+        var activePermanents = await _db.PermanentBookings
+            .Where(p => p.VenueId == venueId && p.Status == "active" && p.DayOfWeek == dow)
+            .ToListAsync();
+
         var pitches = PitchSizes.ResolvedPitches(venue);
 
         // Single-pitch request: build the response scoped to that pitch only and
@@ -564,7 +573,7 @@ public class VenuesController : ControllerBase
             if (pitch == null)
                 return NotFound(new ApiResponse<object> { Success = false, Message = "Pitch not found" });
 
-            var resp = BuildAvailabilityForPitch(venue, pitch, existingBookings, venueHours, bookingDate);
+            var resp = BuildAvailabilityForPitch(venue, pitch, existingBookings, activePermanents, venueHours, bookingDate);
             return Ok(new ApiResponse<AvailableSlotsResponse> { Data = resp });
         }
 
@@ -586,11 +595,26 @@ public class VenuesController : ControllerBase
             .OrderBy(s => s.StartTime)
             .ToList();
 
+        // Merge active permanents into the legacy flat list so old clients (that
+        // ignore the per-pitch array) still see the slot blocked.
+        legacyBookedSlots.AddRange(activePermanents
+            .Where(p => !string.IsNullOrEmpty(p.StartTime))
+            .Select(p => new BookedSlotInfo
+            {
+                StartTime = p.StartTime,
+                Duration = p.Duration,
+                Sport = null,
+                PitchId = p.PitchId,
+                PitchSize = p.PitchSize ?? parent,
+                UnitWeight = PitchSizes.WeightOf(p.PitchSize ?? parent)
+            }));
+        legacyBookedSlots = legacyBookedSlots.OrderBy(s => s.StartTime).ToList();
+
         var legacyOffered = PitchSizes.OfferedSizesForSport(venue, "football");
         var legacyCapacity = PitchSizes.CapacityOfForSport(venue, "football");
 
         var perPitch = pitches
-            .Select(p => BuildPitchAvailability(venue, p, existingBookings, venueHours, bookingDate))
+            .Select(p => BuildPitchAvailability(venue, p, existingBookings, activePermanents, venueHours, bookingDate))
             .ToList();
 
         return Ok(new ApiResponse<AvailableSlotsResponse>
@@ -670,6 +694,7 @@ public class VenuesController : ControllerBase
     /// </summary>
     private static AvailableSlotsResponse BuildAvailabilityForPitch(
         Venue v, PitchDto pitch, List<Booking> allBookings,
+        List<PermanentBooking> activePermanents,
         OperatingHoursInfo? venueHours, DateTime bookingDate)
     {
         // ResolveHoursForDay accepts both full and short day names.
@@ -691,8 +716,22 @@ public class VenuesController : ControllerBase
                 PitchSize = b.PitchSize ?? pitch.ParentSize,
                 UnitWeight = PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize)
             })
-            .OrderBy(s => s.StartTime)
             .ToList();
+
+        // Merge owner-managed permanents on this pitch + this weekday.
+        booked.AddRange(activePermanents
+            .Where(p => MatchesPitch(p, v, pitch))
+            .Where(p => !string.IsNullOrEmpty(p.StartTime))
+            .Select(p => new BookedSlotInfo
+            {
+                StartTime = p.StartTime,
+                Duration = p.Duration,
+                Sport = pitch.Sport,
+                PitchId = pitch.Id,
+                PitchSize = p.PitchSize ?? pitch.ParentSize,
+                UnitWeight = PitchSizes.WeightOf(p.PitchSize ?? pitch.ParentSize)
+            }));
+        booked = booked.OrderBy(s => s.StartTime).ToList();
 
         var offered = PitchSizes.OfferedSizes(pitch);
         var capacity = PitchSizes.CapacityOf(pitch);
@@ -717,6 +756,7 @@ public class VenuesController : ControllerBase
     /// <summary>Build a PitchAvailability entry for inclusion in the multi-pitch response.</summary>
     private static PitchAvailability BuildPitchAvailability(
         Venue v, PitchDto pitch, List<Booking> allBookings,
+        List<PermanentBooking> activePermanents,
         OperatingHoursInfo? venueHours, DateTime bookingDate)
     {
         // ResolveHoursForDay accepts both full and short day names.
@@ -735,8 +775,22 @@ public class VenuesController : ControllerBase
                 PitchSize = b.PitchSize ?? pitch.ParentSize,
                 UnitWeight = PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize)
             })
-            .OrderBy(s => s.StartTime)
             .ToList();
+
+        // Merge active permanents that target this pitch + this weekday.
+        pitchBookings.AddRange(activePermanents
+            .Where(p => MatchesPitch(p, v, pitch))
+            .Where(p => !string.IsNullOrEmpty(p.StartTime))
+            .Select(p => new BookedSlotInfo
+            {
+                StartTime = p.StartTime,
+                Duration = p.Duration,
+                Sport = pitch.Sport,
+                PitchId = pitch.Id,
+                PitchSize = p.PitchSize ?? pitch.ParentSize,
+                UnitWeight = PitchSizes.WeightOf(p.PitchSize ?? pitch.ParentSize)
+            }));
+        pitchBookings = pitchBookings.OrderBy(s => s.StartTime).ToList();
 
         return new PitchAvailability
         {
@@ -768,6 +822,20 @@ public class VenuesController : ControllerBase
         var firstOfSport = PitchSizes.ResolvedPitches(v)
             .FirstOrDefault(p => string.Equals(p.Sport, b.Sport, StringComparison.OrdinalIgnoreCase));
         return firstOfSport != null && firstOfSport.Id == pitch.Id;
+    }
+
+    /// <summary>
+    /// Permanent bookings carry an explicit pitch_id when the venue has multiple
+    /// pitches. When pitch_id is null we treat the permanent as belonging to the
+    /// pitch that matches its size's sport — i.e. the only pitch on a single-pitch
+    /// venue (legacy data).
+    /// </summary>
+    private static bool MatchesPitch(PermanentBooking p, Venue v, PitchDto pitch)
+    {
+        if (!string.IsNullOrEmpty(p.PitchId))
+            return p.PitchId == pitch.Id;
+        var resolved = PitchSizes.ResolvedPitches(v);
+        return resolved.Count == 1 && resolved[0].Id == pitch.Id;
     }
 
     [HttpGet("{venueId}/stats")]
