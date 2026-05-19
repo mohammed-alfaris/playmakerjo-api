@@ -16,6 +16,9 @@ public class PermanentBookingDto
     [JsonPropertyName("pitchSize")]
     public string? PitchSize { get; set; }
 
+    [JsonPropertyName("sport")]
+    public string? Sport { get; set; }
+
     [JsonPropertyName("dayOfWeek")]
     public int DayOfWeek { get; set; }
 
@@ -27,6 +30,9 @@ public class PermanentBookingDto
 
     [JsonPropertyName("label")]
     public string? Label { get; set; }
+
+    [JsonPropertyName("labelAr")]
+    public string? LabelAr { get; set; }
 
     [JsonPropertyName("status")]
     public string Status { get; set; } = "";
@@ -60,4 +66,7 @@ public class CreatePermanentBookingRequest
 
     [JsonPropertyName("label")]
     public string? Label { get; set; }
+
+    [JsonPropertyName("labelAr")]
+    public string? LabelAr { get; set; }
 }

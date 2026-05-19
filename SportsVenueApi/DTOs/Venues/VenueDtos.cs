@@ -52,6 +52,9 @@ public class PitchDto
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
 
+    [JsonPropertyName("nameAr")]
+    public string? NameAr { get; set; }
+
     [JsonPropertyName("sport")]
     public string Sport { get; set; } = "";
 
@@ -79,6 +82,9 @@ public class VenueResponse
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
 
+    [JsonPropertyName("nameAr")]
+    public string? NameAr { get; set; }
+
     [JsonPropertyName("owner")]
     public OwnerRef Owner { get; set; } = null!;
 
@@ -88,8 +94,14 @@ public class VenueResponse
     [JsonPropertyName("city")]
     public string? City { get; set; }
 
+    [JsonPropertyName("cityAr")]
+    public string? CityAr { get; set; }
+
     [JsonPropertyName("address")]
     public string? Address { get; set; }
+
+    [JsonPropertyName("addressAr")]
+    public string? AddressAr { get; set; }
 
     [JsonPropertyName("pricePerHour")]
     public double PricePerHour { get; set; }
@@ -99,6 +111,9 @@ public class VenueResponse
 
     [JsonPropertyName("description")]
     public string? Description { get; set; }
+
+    [JsonPropertyName("descriptionAr")]
+    public string? DescriptionAr { get; set; }
 
     [JsonPropertyName("images")]
     public List<string> Images { get; set; } = [];
@@ -157,6 +172,9 @@ public class VenueCreateRequest
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
 
+    [JsonPropertyName("nameAr")]
+    public string? NameAr { get; set; }
+
     [JsonPropertyName("owner_id")]
     public string? OwnerId { get; set; }
 
@@ -166,8 +184,14 @@ public class VenueCreateRequest
     [JsonPropertyName("city")]
     public string? City { get; set; }
 
+    [JsonPropertyName("cityAr")]
+    public string? CityAr { get; set; }
+
     [JsonPropertyName("address")]
     public string? Address { get; set; }
+
+    [JsonPropertyName("addressAr")]
+    public string? AddressAr { get; set; }
 
     [JsonPropertyName("pricePerHour")]
     public double PricePerHour { get; set; }
@@ -177,6 +201,9 @@ public class VenueCreateRequest
 
     [JsonPropertyName("description")]
     public string? Description { get; set; }
+
+    [JsonPropertyName("descriptionAr")]
+    public string? DescriptionAr { get; set; }
 
     [JsonPropertyName("images")]
     public List<string> Images { get; set; } = [];
@@ -226,6 +253,9 @@ public class VenueUpdateRequest
     [JsonPropertyName("name")]
     public string? Name { get; set; }
 
+    [JsonPropertyName("nameAr")]
+    public string? NameAr { get; set; }
+
     [JsonPropertyName("owner_id")]
     public string? OwnerId { get; set; }
 
@@ -235,8 +265,14 @@ public class VenueUpdateRequest
     [JsonPropertyName("city")]
     public string? City { get; set; }
 
+    [JsonPropertyName("cityAr")]
+    public string? CityAr { get; set; }
+
     [JsonPropertyName("address")]
     public string? Address { get; set; }
+
+    [JsonPropertyName("addressAr")]
+    public string? AddressAr { get; set; }
 
     [JsonPropertyName("pricePerHour")]
     public double? PricePerHour { get; set; }
@@ -246,6 +282,9 @@ public class VenueUpdateRequest
 
     [JsonPropertyName("description")]
     public string? Description { get; set; }
+
+    [JsonPropertyName("descriptionAr")]
+    public string? DescriptionAr { get; set; }
 
     [JsonPropertyName("images")]
     public List<string>? Images { get; set; }

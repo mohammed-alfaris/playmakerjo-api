@@ -34,13 +34,17 @@ public class VenuesController : ControllerBase
     {
         Id = v.Id,
         Name = v.Name,
+        NameAr = v.NameAr,
         Owner = new OwnerRef { Id = v.Owner.Id, Name = v.Owner.Name },
         Sports = v.Sports,
         City = v.City,
+        CityAr = v.CityAr,
         Address = v.Address,
+        AddressAr = v.AddressAr,
         PricePerHour = v.PricePerHour,
         Status = v.Status,
         Description = v.Description,
+        DescriptionAr = v.DescriptionAr,
         Images = v.Images?.Select(x => UploadUrlHelper.Normalize(x, _uploadsBaseUrl)).ToList()!,
         Latitude = v.Latitude,
         Longitude = v.Longitude,
@@ -351,13 +355,17 @@ public class VenuesController : ControllerBase
         var venue = new Venue
         {
             Name = req.Name,
+            NameAr = req.NameAr,
             OwnerId = ownerId,
             Sports = req.Sports,
             City = req.City,
+            CityAr = req.CityAr,
             Address = req.Address,
+            AddressAr = req.AddressAr,
             PricePerHour = req.PricePerHour,
             Status = req.Status,
             Description = req.Description,
+            DescriptionAr = req.DescriptionAr,
             Images = req.Images,
             Latitude = req.Latitude,
             Longitude = req.Longitude,
@@ -410,13 +418,17 @@ public class VenuesController : ControllerBase
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
         if (req.Name != null) venue.Name = req.Name;
+        if (req.NameAr != null) venue.NameAr = req.NameAr;
         if (req.OwnerId != null) venue.OwnerId = req.OwnerId;
         if (req.Sports != null) venue.Sports = req.Sports;
         if (req.City != null) venue.City = req.City;
+        if (req.CityAr != null) venue.CityAr = req.CityAr;
         if (req.Address != null) venue.Address = req.Address;
+        if (req.AddressAr != null) venue.AddressAr = req.AddressAr;
         if (req.PricePerHour.HasValue) venue.PricePerHour = req.PricePerHour.Value;
         if (req.Status != null) venue.Status = req.Status;
         if (req.Description != null) venue.Description = req.Description;
+        if (req.DescriptionAr != null) venue.DescriptionAr = req.DescriptionAr;
         if (req.Images != null) venue.Images = req.Images;
         if (req.Latitude.HasValue) venue.Latitude = req.Latitude;
         if (req.Longitude.HasValue) venue.Longitude = req.Longitude;

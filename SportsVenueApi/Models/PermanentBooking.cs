@@ -30,6 +30,10 @@ public class PermanentBooking
     [MaxLength(8)]
     public string? PitchSize { get; set; } // null when pitch isn't subdividable
 
+    [Column("sport")]
+    [MaxLength(100)]
+    public string? Sport { get; set; }
+
     [Column("day_of_week")]
     public int DayOfWeek { get; set; }     // 0=Sunday … 6=Saturday (matches DateTime.DayOfWeek)
 
@@ -42,6 +46,9 @@ public class PermanentBooking
 
     [Column("label", TypeName = "text")]
     public string? Label { get; set; }     // free-text, e.g. "Khalid weekly"
+
+    [Column("label_ar", TypeName = "text")]
+    public string? LabelAr { get; set; }
 
     [Column("status")]
     [MaxLength(20)]

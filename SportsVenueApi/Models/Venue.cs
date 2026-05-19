@@ -16,6 +16,10 @@ public class Venue
     [MaxLength(255)]
     public string Name { get; set; } = "";
 
+    [Column("name_ar")]
+    [MaxLength(255)]
+    public string? NameAr { get; set; }
+
     [Column("owner_id")]
     [MaxLength(32)]
     public string OwnerId { get; set; } = "";
@@ -27,9 +31,17 @@ public class Venue
     [MaxLength(255)]
     public string? City { get; set; }
 
+    [Column("city_ar")]
+    [MaxLength(255)]
+    public string? CityAr { get; set; }
+
     [Column("address")]
     [MaxLength(500)]
     public string? Address { get; set; }
+
+    [Column("address_ar")]
+    [MaxLength(500)]
+    public string? AddressAr { get; set; }
 
     [Column("price_per_hour")]
     public double PricePerHour { get; set; }
@@ -40,6 +52,9 @@ public class Venue
 
     [Column("description", TypeName = "text")]
     public string? Description { get; set; }
+
+    [Column("description_ar", TypeName = "text")]
+    public string? DescriptionAr { get; set; }
 
     [Column("images", TypeName = "json")]
     public string ImagesJson { get; set; } = "[]";

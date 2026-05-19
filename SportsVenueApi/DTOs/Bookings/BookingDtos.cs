@@ -10,8 +10,14 @@ public class VenueRef
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
 
+    [JsonPropertyName("nameAr")]
+    public string? NameAr { get; set; }
+
     [JsonPropertyName("city")]
     public string? City { get; set; }
+
+    [JsonPropertyName("cityAr")]
+    public string? CityAr { get; set; }
 
     [JsonPropertyName("images")]
     public List<string> Images { get; set; } = [];

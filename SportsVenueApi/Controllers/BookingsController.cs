@@ -1045,7 +1045,9 @@ public class BookingsController : ControllerBase
             {
                 Id = b.Venue.Id,
                 Name = b.Venue.Name,
+                NameAr = b.Venue.NameAr,
                 City = b.Venue.City,
+                CityAr = b.Venue.CityAr,
                 Images = b.Venue.Images?.Select(x => UploadUrlHelper.Normalize(x, _uploadsBaseUrl)).ToList()!,
                 CliqAlias = b.Venue.CliqAlias
             },

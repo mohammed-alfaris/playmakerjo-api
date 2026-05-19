@@ -30,5 +30,9 @@ public class VenueCreateRequestValidator : AbstractValidator<VenueCreateRequest>
 
         RuleFor(v => v.Sports)
             .NotEmpty().WithMessage("At least one sport is required");
+
+        RuleFor(v => v.NameAr).MaximumLength(120).When(v => v.NameAr != null);
+        RuleFor(v => v.CityAr).MaximumLength(80).When(v => v.CityAr != null);
+        RuleFor(v => v.AddressAr).MaximumLength(255).When(v => v.AddressAr != null);
     }
 }
