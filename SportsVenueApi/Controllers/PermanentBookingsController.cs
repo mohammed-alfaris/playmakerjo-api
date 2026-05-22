@@ -211,7 +211,7 @@ public class PermanentBookingsController : ControllerBase
     /// <summary>Find the next date (today or later) whose DayOfWeek matches.</summary>
     private static DateTime NextDateForWeekday(int dow)
     {
-        var today = DateTime.UtcNow.Date;
+        var today = PlatformConstants.JordanToday();
         var diff = ((dow - (int)today.DayOfWeek) + 7) % 7;
         return today.AddDays(diff);
     }
@@ -302,7 +302,7 @@ public class PermanentBookingsController : ControllerBase
             .ToList();
 
         // (b) Future Booking rows on dates whose DayOfWeek == dow within 90 days.
-        var today = DateTime.UtcNow.Date;
+        var today = PlatformConstants.JordanToday();
         var horizon = today.AddDays(90);
         var futureBookings = await _db.Bookings
             .Where(b => b.VenueId == venue.Id

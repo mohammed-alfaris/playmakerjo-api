@@ -203,7 +203,7 @@ public class BookingsController : ControllerBase
         if (!DateTime.TryParse(req.Date, out var bookingDate))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid date format. Use YYYY-MM-DD" });
 
-        if (bookingDate.Date < DateTime.UtcNow.Date)
+        if (bookingDate.Date < PlatformConstants.JordanToday())
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot book in the past" });
 
         // Validate start time format
@@ -735,7 +735,7 @@ public class BookingsController : ControllerBase
         startDate = startDate.Date;
         endDate = endDate.Date;
 
-        if (startDate < DateTime.UtcNow.Date)
+        if (startDate < PlatformConstants.JordanToday())
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Start date cannot be in the past" });
         if (endDate <= startDate)
             return BadRequest(new ApiResponse<object> { Success = false, Message = "End date must be after start date" });
@@ -1006,7 +1006,7 @@ public class BookingsController : ControllerBase
         if (UserRole == "venue_owner" && group.Venue.OwnerId != UserId)
             return Forbid();
 
-        var today = DateTime.UtcNow.Date;
+        var today = PlatformConstants.JordanToday();
         var active = new[] { "pending", "pending_payment", "pending_review", "confirmed" };
 
         var toCancel = await _db.Bookings
