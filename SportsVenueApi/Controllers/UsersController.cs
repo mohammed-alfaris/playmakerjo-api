@@ -150,6 +150,10 @@ public class UsersController : ControllerBase
         {
             if (req.Role != "venue_staff")
                 return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Venue owners can only create venue_staff accounts" });
+
+            // Staff→venue linking is deferred — for now, only owners with at least one venue may create staff.
+            if (!await _db.Venues.AnyAsync(v => v.OwnerId == UserId))
+                return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You must own at least one venue to create staff accounts" });
         }
         else if (UserRole != "super_admin")
         {

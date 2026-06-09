@@ -8,6 +8,7 @@ using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.PermanentBookings;
 using SportsVenueApi.DTOs.Venues;
+using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
 
 namespace SportsVenueApi.Controllers;
@@ -201,12 +202,7 @@ public class PermanentBookingsController : ControllerBase
 
     // ---- Helpers ----
 
-    private bool CanManageVenue(Venue venue)
-    {
-        if (UserRole == "super_admin") return true;
-        if (UserRole == "venue_owner" && venue.OwnerId == UserId) return true;
-        return false;
-    }
+    private bool CanManageVenue(Venue venue) => VenueAccess.CanManage(venue, UserId, UserRole);
 
     /// <summary>Find the next date (today or later) whose DayOfWeek matches.</summary>
     private static DateTime NextDateForWeekday(int dow)

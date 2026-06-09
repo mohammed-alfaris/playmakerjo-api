@@ -717,6 +717,8 @@ public class BookingsController : ControllerBase
     }
 
     // POST /api/v1/bookings/recurring — create a recurring series
+    // Player-created recurring series are intended product behaviour. Owner-managed
+    // recurring slots live in PermanentBookingsController, which enforces CanManageVenue.
     [HttpPost("recurring")]
     public async Task<IActionResult> CreateRecurring([FromBody] CreateRecurringBookingRequest req)
     {

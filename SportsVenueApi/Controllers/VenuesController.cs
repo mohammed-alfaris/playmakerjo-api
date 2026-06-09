@@ -300,6 +300,9 @@ public class VenuesController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] VenueCreateRequest req)
     {
+        if (UserRole != "super_admin" && UserRole != "venue_owner")
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Only admins and venue owners can create venues" });
+
         var ownerId = req.OwnerId ?? UserId;
         if (UserRole == "venue_owner")
             ownerId = UserId;
@@ -417,9 +420,19 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
+        if (!VenueAccess.CanManage(venue, UserId, UserRole))
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to manage this venue" });
+
+        // Ownership reassignment is admin-only. Echoing back the current owner is a no-op.
+        if (req.OwnerId != null && req.OwnerId != venue.OwnerId)
+        {
+            if (UserRole != "super_admin")
+                return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Only admins can reassign venue ownership" });
+            venue.OwnerId = req.OwnerId;
+        }
+
         if (req.Name != null) venue.Name = req.Name;
         if (req.NameAr != null) venue.NameAr = req.NameAr;
-        if (req.OwnerId != null) venue.OwnerId = req.OwnerId;
         if (req.Sports != null) venue.Sports = req.Sports;
         if (req.City != null) venue.City = req.City;
         if (req.CityAr != null) venue.CityAr = req.CityAr;
@@ -528,6 +541,9 @@ public class VenuesController : ControllerBase
         var venue = await _db.Venues.FindAsync(venueId);
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
+
+        if (!VenueAccess.CanManage(venue, UserId, UserRole))
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to manage this venue" });
 
         _db.Venues.Remove(venue);
         await _db.SaveChangesAsync();
@@ -856,6 +872,10 @@ public class VenuesController : ControllerBase
         var venue = await _db.Venues.FindAsync(venueId);
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
+
+        // Stats include revenue — only the venue's owner or an admin may read them.
+        if (!VenueAccess.CanManage(venue, UserId, UserRole))
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to view this venue's stats" });
 
         var totalBookings = await _db.Bookings.CountAsync(b => b.VenueId == venueId);
         var totalRevenue = await _db.Bookings
