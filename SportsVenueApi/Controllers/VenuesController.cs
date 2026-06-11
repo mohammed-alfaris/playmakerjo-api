@@ -250,6 +250,87 @@ public class VenuesController : ControllerBase
         return Ok(new ApiResponse<VenueResponse> { Data = dto });
     }
 
+    // GET /api/v1/venues/search?date=2025-04-10&startTime=18:00&duration=90&sport=football&city=Amman
+    // Availability search: active venues with at least one pitch (sport-matching
+    // when sport is given) that can take a booking covering the requested window
+    // on that date. Same response shape as /venues/public.
+    [AllowAnonymous]
+    [HttpGet("search")]
+    public async Task<IActionResult> Search(
+        [FromQuery] string? date = null,
+        [FromQuery] string? startTime = null,
+        [FromQuery] int duration = 60,
+        [FromQuery] string? sport = null,
+        [FromQuery] string? city = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int limit = 20)
+    {
+        if (string.IsNullOrEmpty(date) || !DateTime.TryParse(date, out var bookingDate))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid or missing date. Use YYYY-MM-DD" });
+
+        if (string.IsNullOrEmpty(startTime) || !TimeSpan.TryParse(startTime, out var start))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid or missing startTime. Use HH:mm" });
+
+        if (duration <= 0)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "duration must be a positive number of minutes" });
+
+        if (page < 1) page = 1;
+        if (limit < 1) limit = 20;
+        if (limit > 50) limit = 50;
+
+        var baseQuery = _db.Venues.Where(v => v.Status == "active");
+
+        if (!string.IsNullOrEmpty(sport))
+            baseQuery = baseQuery.Where(v => v.SportsJson.Contains($"\"{sport}\""));
+
+        if (!string.IsNullOrEmpty(city))
+            baseQuery = baseQuery.Where(v => v.City == city);
+
+        var candidates = await baseQuery
+            .Include(v => v.Owner)
+            .AsSplitQuery()
+            .OrderByDescending(v => v.CreatedAt)
+            .ToListAsync();
+
+        var venueIds = candidates.Select(v => v.Id).ToList();
+        var dayBookings = await _db.Bookings
+            .Where(b => venueIds.Contains(b.VenueId)
+                && b.Date.Date == bookingDate.Date
+                && b.Status != "cancelled")
+            .ToListAsync();
+        var dow = (int)bookingDate.DayOfWeek;
+        var dayPermanents = await _db.PermanentBookings
+            .Where(p => venueIds.Contains(p.VenueId) && p.Status == "active" && p.DayOfWeek == dow)
+            .ToListAsync();
+
+        var bookingsByVenue = dayBookings.GroupBy(b => b.VenueId).ToDictionary(g => g.Key, g => g.ToList());
+        var permanentsByVenue = dayPermanents.GroupBy(p => p.VenueId).ToDictionary(g => g.Key, g => g.ToList());
+
+        var dayName = bookingDate.DayOfWeek.ToString().ToLower();
+        var available = candidates.Where(v =>
+        {
+            var vBookings = bookingsByVenue.GetValueOrDefault(v.Id) ?? [];
+            var vPermanents = permanentsByVenue.GetValueOrDefault(v.Id) ?? [];
+            return PitchSizes.ResolvedPitches(v)
+                .Where(p => string.IsNullOrEmpty(sport) || string.Equals(p.Sport, sport, StringComparison.OrdinalIgnoreCase))
+                .Any(p => AvailabilityHelper.PitchHasCapacity(v, p, start, duration, dayName, vBookings, vPermanents));
+        }).ToList();
+
+        var total = available.Count;
+        var dtos = available
+            .Skip((page - 1) * limit)
+            .Take(limit)
+            .Select(ToDto)
+            .ToList();
+        await StampAggregatesAsync(dtos);
+
+        return Ok(new ApiResponse<List<VenueResponse>>
+        {
+            Data = dtos,
+            Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total }
+        });
+    }
+
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] int page = 1,
@@ -573,7 +654,7 @@ public class VenuesController : ControllerBase
         // ResolveHoursForDay accepts both full day names and 3-letter abbreviations
         // and honours the "closed: true" flag written by the dashboard editor.
         var dayName = bookingDate.DayOfWeek.ToString().ToLower();
-        OperatingHoursInfo? venueHours = ResolveHoursForDay(venue.OperatingHours, dayName);
+        OperatingHoursInfo? venueHours = AvailabilityHelper.ResolveHoursForDay(venue.OperatingHours, dayName);
 
         // Get existing bookings for that day (non-cancelled)
         var existingBookings = await _db.Bookings
@@ -666,57 +747,6 @@ public class VenuesController : ControllerBase
         });
     }
 
-    private static OperatingHoursInfo? ResolveHoursForDay(Dictionary<string, object>? hoursMap, string dayName)
-    {
-        if (hoursMap == null) return null;
-
-        // The dashboard writes keys as full day names ("monday", "tuesday", ...)
-        // while older seed data used 3-letter abbreviations ("mon", "tue", ...).
-        // Accept both so legacy venues and newly-edited ones keep working.
-        var dayFull = dayName.ToLower();
-        var dayShort = dayFull.Length >= 3 ? dayFull[..3] : dayFull;
-        if (!hoursMap.TryGetValue(dayFull, out var dayHoursObj)
-            && !hoursMap.TryGetValue(dayShort, out dayHoursObj))
-            return null;
-
-        var dayHoursJson = JsonSerializer.Serialize(dayHoursObj);
-        var dayHours = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dayHoursJson);
-        if (dayHours == null) return null;
-
-        // Honour the "closed: true" flag written by the dashboard editor — if
-        // the day is marked closed there is no open/close window for it.
-        if (dayHours.TryGetValue("closed", out var closedEl)
-            && closedEl.ValueKind == JsonValueKind.True)
-            return null;
-
-        string GetStr(string k, string fallback)
-            => dayHours.TryGetValue(k, out var el) && el.ValueKind == JsonValueKind.String
-                ? el.GetString() ?? fallback
-                : fallback;
-
-        return new OperatingHoursInfo
-        {
-            Open = GetStr("open", "08:00"),
-            Close = GetStr("close", "22:00")
-        };
-    }
-
-    private static OperatingHoursInfo? ResolvePitchHours(PitchDto pitch, string dayName, OperatingHoursInfo? fallback)
-    {
-        if (pitch.OperatingHours == null) return fallback;
-        try
-        {
-            var json = JsonSerializer.Serialize(pitch.OperatingHours);
-            var map = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-            if (map == null) return fallback;
-            return ResolveHoursForDay(map, dayName) ?? fallback;
-        }
-        catch
-        {
-            return fallback;
-        }
-    }
-
     /// <summary>
     /// Build the single-pitch AvailableSlotsResponse (legacy shape, no <c>pitches</c> array).
     /// </summary>
@@ -727,10 +757,10 @@ public class VenuesController : ControllerBase
     {
         // ResolveHoursForDay accepts both full and short day names.
         var dayName = bookingDate.DayOfWeek.ToString().ToLower();
-        var hours = ResolvePitchHours(pitch, dayName, venueHours);
+        var hours = AvailabilityHelper.ResolvePitchHours(pitch, dayName, venueHours);
 
         var pitchBookings = allBookings
-            .Where(b => MatchesPitch(b, v, pitch))
+            .Where(b => AvailabilityHelper.MatchesPitch(b, v, pitch))
             .ToList();
 
         var booked = pitchBookings
@@ -748,7 +778,7 @@ public class VenuesController : ControllerBase
 
         // Merge owner-managed permanents on this pitch + this weekday.
         booked.AddRange(activePermanents
-            .Where(p => MatchesPitch(p, v, pitch))
+            .Where(p => AvailabilityHelper.MatchesPitch(p, v, pitch))
             .Where(p => !string.IsNullOrEmpty(p.StartTime))
             .Select(p => new BookedSlotInfo
             {
@@ -789,10 +819,10 @@ public class VenuesController : ControllerBase
     {
         // ResolveHoursForDay accepts both full and short day names.
         var dayName = bookingDate.DayOfWeek.ToString().ToLower();
-        var hours = ResolvePitchHours(pitch, dayName, venueHours);
+        var hours = AvailabilityHelper.ResolvePitchHours(pitch, dayName, venueHours);
 
         var pitchBookings = allBookings
-            .Where(b => MatchesPitch(b, v, pitch))
+            .Where(b => AvailabilityHelper.MatchesPitch(b, v, pitch))
             .Where(b => !string.IsNullOrEmpty(b.StartTime))
             .Select(b => new BookedSlotInfo
             {
@@ -807,7 +837,7 @@ public class VenuesController : ControllerBase
 
         // Merge active permanents that target this pitch + this weekday.
         pitchBookings.AddRange(activePermanents
-            .Where(p => MatchesPitch(p, v, pitch))
+            .Where(p => AvailabilityHelper.MatchesPitch(p, v, pitch))
             .Where(p => !string.IsNullOrEmpty(p.StartTime))
             .Select(p => new BookedSlotInfo
             {
@@ -833,37 +863,6 @@ public class VenuesController : ControllerBase
             OperatingHours = hours,
             BookedSlots = pitchBookings
         };
-    }
-
-    /// <summary>
-    /// A booking belongs to a pitch when the explicit pitch_id matches OR — on
-    /// legacy rows where pitch_id is null — when this pitch is the first pitch
-    /// of the booking's sport on the resolved pitch list. This makes legacy
-    /// bookings appear on exactly one timeline (never duplicated), and makes
-    /// venues with empty <c>pitches</c> (implicit single-pitch) behave exactly
-    /// as today.
-    /// </summary>
-    private static bool MatchesPitch(Booking b, Venue v, PitchDto pitch)
-    {
-        if (!string.IsNullOrEmpty(b.PitchId))
-            return b.PitchId == pitch.Id;
-        var firstOfSport = PitchSizes.ResolvedPitches(v)
-            .FirstOrDefault(p => string.Equals(p.Sport, b.Sport, StringComparison.OrdinalIgnoreCase));
-        return firstOfSport != null && firstOfSport.Id == pitch.Id;
-    }
-
-    /// <summary>
-    /// Permanent bookings carry an explicit pitch_id when the venue has multiple
-    /// pitches. When pitch_id is null we treat the permanent as belonging to the
-    /// pitch that matches its size's sport — i.e. the only pitch on a single-pitch
-    /// venue (legacy data).
-    /// </summary>
-    private static bool MatchesPitch(PermanentBooking p, Venue v, PitchDto pitch)
-    {
-        if (!string.IsNullOrEmpty(p.PitchId))
-            return p.PitchId == pitch.Id;
-        var resolved = PitchSizes.ResolvedPitches(v);
-        return resolved.Count == 1 && resolved[0].Id == pitch.Id;
     }
 
     [HttpGet("{venueId}/stats")]
