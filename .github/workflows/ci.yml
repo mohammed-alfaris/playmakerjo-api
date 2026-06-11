@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testpass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore
+
+      - name: Test
+        run: dotnet test --no-build
+        env:
+          TEST_MYSQL_CONNECTION: "Server=127.0.0.1;Port=3306;Database=sportsvenue_test;User=root;Password=testpass;charset=utf8mb4;Allow User Variables=True;"
+          ConnectionStrings__DefaultConnection: "Server=127.0.0.1;Port=3306;Database=sportsvenue_test;User=root;Password=testpass;charset=utf8mb4;Allow User Variables=True;"
+          Jwt__SecretKey: "ci-only-dummy-jwt-secret-key-0123456789abcdef"
