@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
@@ -185,6 +186,7 @@ public class BookingsController : ControllerBase
 
     // POST /api/v1/bookings — create a new booking
     [HttpPost]
+    [EnableRateLimiting("booking-create")]
     public async Task<IActionResult> Create([FromBody] CreateBookingRequest req)
     {
         // Validate venue exists and is active
@@ -720,6 +722,7 @@ public class BookingsController : ControllerBase
     // Player-created recurring series are intended product behaviour. Owner-managed
     // recurring slots live in PermanentBookingsController, which enforces CanManageVenue.
     [HttpPost("recurring")]
+    [EnableRateLimiting("booking-create")]
     public async Task<IActionResult> CreateRecurring([FromBody] CreateRecurringBookingRequest req)
     {
         var venue = await _db.Venues.FindAsync(req.VenueId);

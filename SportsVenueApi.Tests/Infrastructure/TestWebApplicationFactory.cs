@@ -55,8 +55,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         // would throw when another factory in the same process already created the
         // default app. The empty value falls through to the try/catch-wrapped branch.
         builder.UseSetting("Firebase:CredentialFile", "");
-        // High limits for rate-limited endpoints planned in a later phase — the keys
-        // don't exist yet, so this is harmless now and prevents future flakes.
+        // High limits so the per-user uploads/booking-create limiters never
+        // reject regular suite traffic.
         builder.UseSetting("RateLimiting:Uploads:PermitLimit", "100000");
         builder.UseSetting("RateLimiting:BookingCreate:PermitLimit", "100000");
     }

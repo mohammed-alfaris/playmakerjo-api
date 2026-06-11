@@ -1,4 +1,5 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
 using FirebaseAdmin;
@@ -111,16 +112,44 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Rate limiting
+// Rate limiting — "auth" partitions per client IP so one attacker can't exhaust
+// logins for everyone; "uploads" and "booking-create" partition per authenticated user.
+static string UserOrIpKey(HttpContext context) =>
+    context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+        ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
-    options.AddFixedWindowLimiter("auth", limiter =>
-    {
-        limiter.PermitLimit = 5;
-        limiter.Window = TimeSpan.FromMinutes(1);
-        limiter.QueueLimit = 0;
-    });
+    options.AddPolicy("auth", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+
+    var uploadsLimit = builder.Configuration.GetValue("RateLimiting:Uploads:PermitLimit", 20);
+    options.AddPolicy("uploads", context =>
+        RateLimitPartition.GetFixedWindowLimiter(UserOrIpKey(context),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = uploadsLimit,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+
+    var bookingCreateLimit = builder.Configuration.GetValue("RateLimiting:BookingCreate:PermitLimit", 10);
+    options.AddPolicy("booking-create", context =>
+        RateLimitPartition.GetFixedWindowLimiter(UserOrIpKey(context),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = bookingCreateLimit,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
 });
 
 // Health checks
@@ -214,8 +243,9 @@ app.UseStaticFiles(new StaticFileOptions
 {
     ContentTypeProvider = contentTypeProvider,
 });
-app.UseRateLimiter();
+// Rate limiter runs after authentication so per-user policies can key on claims.
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health");

@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SportsVenueApi.DTOs;
 
 namespace SportsVenueApi.Controllers;
@@ -8,6 +9,7 @@ namespace SportsVenueApi.Controllers;
 [ApiController]
 [Route("api/v1/uploads")]
 [Authorize]
+[EnableRateLimiting("uploads")]
 public class UploadsController : ControllerBase
 {
     private readonly IConfiguration _config;
