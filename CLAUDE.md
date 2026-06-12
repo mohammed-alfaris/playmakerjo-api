@@ -104,11 +104,8 @@ API docs: `http://localhost:8000/openapi/v1.json`
 ---
 
 ## Dev credentials
-| Role | Email | Password |
-|------|-------|----------|
-| super_admin | amermohammed500@gmail.com | M7md.272 |
-| venue_owner | khalid@venues.jo | M7md.272 |
-| player | (register via app) | (user sets) |
+Seed-user logins live in the deploy folder's `SECRETS.md` (local only, never committed).
+Players register via the app.
 
 ---
 
