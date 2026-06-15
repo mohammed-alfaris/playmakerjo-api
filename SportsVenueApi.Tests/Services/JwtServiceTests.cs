@@ -40,7 +40,10 @@ public class JwtServiceTests
         var sub = principal!.FindFirst(ClaimTypes.NameIdentifier)?.Value
                   ?? principal.FindFirst("sub")?.Value;
         Assert.Equal("user-123", sub);
-        Assert.Equal("super_admin", principal.FindFirst("role")?.Value);
+        // The handler's default inbound claim mapping remaps "role" onto ClaimTypes.Role
+        // (same mapping that turns "sub" into NameIdentifier).
+        var role = principal.FindFirst(ClaimTypes.Role)?.Value ?? principal.FindFirst("role")?.Value;
+        Assert.Equal("super_admin", role);
         Assert.Equal("access", principal.FindFirst("type")?.Value);
     }
 
