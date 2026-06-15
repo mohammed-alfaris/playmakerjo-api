@@ -56,8 +56,11 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         // default app. The empty value falls through to the try/catch-wrapped branch.
         builder.UseSetting("Firebase:CredentialFile", "");
         // High limits so the per-user uploads/booking-create limiters never
-        // reject regular suite traffic.
+        // reject regular suite traffic. Auth is also raised — the suite drives
+        // many login/register/refresh calls from one loopback IP within a minute,
+        // which would otherwise trip the per-IP 5/min auth limiter.
         builder.UseSetting("RateLimiting:Uploads:PermitLimit", "100000");
         builder.UseSetting("RateLimiting:BookingCreate:PermitLimit", "100000");
+        builder.UseSetting("RateLimiting:Auth:PermitLimit", "100000");
     }
 }

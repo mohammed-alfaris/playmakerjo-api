@@ -121,12 +121,13 @@ static string UserOrIpKey(HttpContext context) =>
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
+    var authLimit = builder.Configuration.GetValue("RateLimiting:Auth:PermitLimit", 5);
     options.AddPolicy("auth", context =>
         RateLimitPartition.GetFixedWindowLimiter(
             context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 5,
+                PermitLimit = authLimit,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0
             }));
