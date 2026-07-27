@@ -97,4 +97,15 @@ public static class TestEntities
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         return await db.Bookings.AsNoTracking().Where(b => b.VenueId == venueId).ToListAsync();
     }
+
+    /// <summary>The ledger rows for one booking, oldest first — the order money arrived in.</summary>
+    public static async Task<List<Payment>> LoadPayments(this DatabaseFixture fx, string bookingId)
+    {
+        using var scope = fx.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Payments.AsNoTracking()
+            .Where(p => p.BookingId == bookingId)
+            .OrderBy(p => p.Date).ThenBy(p => p.Id)
+            .ToListAsync();
+    }
 }

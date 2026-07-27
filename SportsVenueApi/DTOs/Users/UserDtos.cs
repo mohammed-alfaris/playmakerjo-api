@@ -28,6 +28,10 @@ public class UserResponse
     [JsonPropertyName("permissions")]
     public string? Permissions { get; set; }
 
+    /// <summary>The venue_owner a staff account works for. Null for every other role.</summary>
+    [JsonPropertyName("managedByOwnerId")]
+    public string? ManagedByOwnerId { get; set; }
+
     [JsonPropertyName("createdAt")]
     public string CreatedAt { get; set; } = "";
 }
@@ -51,6 +55,20 @@ public class CreateUserRequest
 
     [JsonPropertyName("permissions")]
     public string? Permissions { get; set; }
+
+    /// <summary>
+    /// Required when a super_admin creates a venue_staff account. Ignored when an owner
+    /// creates staff — they always get themselves, so an owner cannot plant staff inside
+    /// a competitor's account.
+    /// </summary>
+    [JsonPropertyName("managedByOwnerId")]
+    public string? ManagedByOwnerId { get; set; }
+}
+
+public class PermissionsUpdateRequest
+{
+    [JsonPropertyName("permissions")]
+    public string Permissions { get; set; } = "";
 }
 
 public class ChangePasswordRequest

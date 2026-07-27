@@ -30,6 +30,17 @@ public class VenuesController : ControllerBase
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
 
+    /// <summary>The venue_owner a staff caller works for. Null for every other role.</summary>
+    private string? StaffOwnerId => User.FindFirstValue("owner_id");
+
+    /// <summary>The owner whose venues this caller belongs to — themselves, or their boss.</summary>
+    private string? EffectiveOwnerId => UserRole switch
+    {
+        "venue_owner" => UserId,
+        "venue_staff" => StaffOwnerId,
+        _ => null,
+    };
+
     private VenueResponse ToDto(Venue v) => new()
     {
         Id = v.Id,
@@ -340,14 +351,27 @@ public class VenuesController : ControllerBase
         [FromQuery] string? status = null,
         [FromQuery] string? owner_id = null)
     {
-        var ownerId = owner_id;
-        if (UserRole == "venue_owner")
-            ownerId = UserId;
-
+        // Deny-by-default. The old shape pinned ownerId only for venue_owner and then
+        // applied the filter only when it was non-empty, so a player or a staff account
+        // received every venue on the platform — including competitors' pricing and CliQ
+        // aliases. Public discovery lives on the [AllowAnonymous] /venues/public routes;
+        // this one is the back office.
         var baseQuery = _db.Venues.AsQueryable();
 
-        if (!string.IsNullOrEmpty(ownerId))
-            baseQuery = baseQuery.Where(v => v.OwnerId == ownerId);
+        if (UserRole == "super_admin")
+        {
+            if (!string.IsNullOrEmpty(owner_id))
+                baseQuery = baseQuery.Where(v => v.OwnerId == owner_id);
+        }
+        else if (EffectiveOwnerId is { Length: > 0 } scopedOwnerId)
+        {
+            // Owners see their own; staff see their employer's. The query string is ignored.
+            baseQuery = baseQuery.Where(v => v.OwnerId == scopedOwnerId);
+        }
+        else
+        {
+            return Forbid();
+        }
 
         if (!string.IsNullOrEmpty(search))
             baseQuery = baseQuery.Where(v => EF.Functions.Like(v.Name, $"%{search}%")

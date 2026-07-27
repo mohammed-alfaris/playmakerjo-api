@@ -38,6 +38,7 @@ public class UsersController : ControllerBase
         Status = u.Status,
         Avatar = UploadUrlHelper.Normalize(u.Avatar, _uploadsBaseUrl),
         Permissions = u.Permissions,
+        ManagedByOwnerId = u.ManagedByOwnerId,
         CreatedAt = u.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
     };
 
@@ -142,6 +143,73 @@ public class UsersController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// An owner's own staff. Separate from <see cref="List"/>, which is the platform-wide
+    /// user directory and stays admin-only — an owner must never be handed a list that
+    /// includes players, other owners, or a role dropdown. Until this existed an owner
+    /// could create staff via POST /users and then never see them again.
+    /// </summary>
+    [HttpGet("staff")]
+    public async Task<IActionResult> ListStaff(
+        [FromQuery] int page = 1,
+        [FromQuery] int limit = 20,
+        [FromQuery] string? owner_id = null)
+    {
+        string ownerId;
+        if (UserRole == "venue_owner")
+        {
+            // The query string is ignored — an owner only ever sees their own team.
+            ownerId = UserId;
+        }
+        else if (UserRole == "super_admin")
+        {
+            if (string.IsNullOrWhiteSpace(owner_id))
+                return BadRequest(new ApiResponse<object> { Success = false, Message = "owner_id is required" });
+            ownerId = owner_id;
+        }
+        else
+        {
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Forbidden" });
+        }
+
+        var query = _db.Users.Where(u => u.Role == "venue_staff" && u.ManagedByOwnerId == ownerId);
+
+        var total = await query.CountAsync();
+        var staff = await query
+            .OrderByDescending(u => u.CreatedAt)
+            .Skip((page - 1) * limit)
+            .Take(limit)
+            .ToListAsync();
+
+        return Ok(new ApiResponse<List<UserResponse>>
+        {
+            Data = staff.Select(ToDto).ToList(),
+            Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total }
+        });
+    }
+
+    /// <summary>Change a staff member's read/write level. Owners may only touch their own.</summary>
+    [HttpPatch("{userId}/permissions")]
+    public async Task<IActionResult> UpdatePermissions(string userId, [FromBody] PermissionsUpdateRequest req)
+    {
+        if (req.Permissions is not ("read" or "write"))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "permissions must be 'read' or 'write'" });
+
+        var user = await _db.Users.FindAsync(userId);
+        if (user == null || user.Role != "venue_staff")
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Staff account not found" });
+
+        var allowed = UserRole == "super_admin"
+                   || (UserRole == "venue_owner" && user.ManagedByOwnerId == UserId);
+        if (!allowed)
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Forbidden" });
+
+        user.Permissions = req.Permissions;
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "Permissions updated" });
+    }
+
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateUserRequest req)
     {
@@ -151,7 +219,6 @@ public class UsersController : ControllerBase
             if (req.Role != "venue_staff")
                 return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Venue owners can only create venue_staff accounts" });
 
-            // Staff→venue linking is deferred — for now, only owners with at least one venue may create staff.
             if (!await _db.Venues.AnyAsync(v => v.OwnerId == UserId))
                 return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You must own at least one venue to create staff accounts" });
         }
@@ -163,6 +230,29 @@ public class UsersController : ControllerBase
         if (await _db.Users.AnyAsync(u => u.Email == req.Email))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Email already in use" });
 
+        // Which owner does this staff member work for? An owner creating staff always gets
+        // themselves; an admin must name the owner explicitly, because a staff account with
+        // no owner can reach nothing and would look like a silent failure.
+        string? managedByOwnerId = null;
+        if (req.Role == "venue_staff")
+        {
+            if (UserRole == "venue_owner")
+            {
+                managedByOwnerId = UserId;
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(req.ManagedByOwnerId))
+                    return BadRequest(new ApiResponse<object> { Success = false, Message = "managedByOwnerId is required when creating a staff account" });
+
+                var owner = await _db.Users.FirstOrDefaultAsync(u => u.Id == req.ManagedByOwnerId);
+                if (owner == null || owner.Role != "venue_owner")
+                    return BadRequest(new ApiResponse<object> { Success = false, Message = "managedByOwnerId must reference an existing venue_owner" });
+
+                managedByOwnerId = owner.Id;
+            }
+        }
+
         var user = new Models.User
         {
             Name        = req.Name.Trim(),
@@ -172,6 +262,7 @@ public class UsersController : ControllerBase
             Role        = req.Role,
             Status      = "active",
             Permissions = req.Role == "venue_staff" ? (req.Permissions ?? "read") : null,
+            ManagedByOwnerId = managedByOwnerId,
         };
 
         _db.Users.Add(user);

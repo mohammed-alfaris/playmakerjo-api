@@ -43,6 +43,23 @@ public class User
     [MaxLength(20)]
     public string? Permissions { get; set; }
 
+    /// <summary>
+    /// For <c>venue_staff</c> only: the venue_owner this account works for. Staff inherit
+    /// access to that owner's venues, gated by <see cref="Permissions"/>.
+    ///
+    /// Until this existed a staff account belonged to nobody — the role was created but
+    /// never linked to anything, so the server could not answer "which venue does this
+    /// user work for". Every staff authorization decision was therefore either "block all
+    /// staff" or, in the deny-list guards, "let all staff through unscoped".
+    ///
+    /// Null for every other role, and null for legacy staff rows created before this
+    /// column existed — which is why the access rules must treat null as "no access"
+    /// rather than "all access".
+    /// </summary>
+    [Column("managed_by_owner_id")]
+    [MaxLength(32)]
+    public string? ManagedByOwnerId { get; set; }
+
     /// <summary>"en" or "ar" — used for push notification language</summary>
     [Column("preferred_language")]
     [MaxLength(5)]

@@ -166,7 +166,11 @@ public class AuthController : ControllerBase
         if (user == null || user.Status == "banned")
             return Unauthorized(new ApiResponse<object> { Success = false, Message = "User not found or banned" });
 
-        var accessToken = _jwt.CreateAccessToken(user.Id, user.Role);
+        // Re-read the staff link and permission level from the row on every refresh, so a
+        // revoked or downgraded staff member loses access within one access-token lifetime
+        // rather than carrying stale claims for the full refresh window.
+        var accessToken = _jwt.CreateAccessToken(
+            user.Id, user.Role, user.ManagedByOwnerId, user.Permissions);
 
         return Ok(new ApiResponse<TokenData>
         {
@@ -190,8 +194,10 @@ public class AuthController : ControllerBase
 
     private ApiResponse<LoginData> IssueTokens(User user)
     {
-        var accessToken = _jwt.CreateAccessToken(user.Id, user.Role);
-        var refreshToken = _jwt.CreateRefreshToken(user.Id, user.Role);
+        var accessToken = _jwt.CreateAccessToken(
+            user.Id, user.Role, user.ManagedByOwnerId, user.Permissions);
+        var refreshToken = _jwt.CreateRefreshToken(
+            user.Id, user.Role, user.ManagedByOwnerId, user.Permissions);
 
         Response.Cookies.Append("refresh_token", refreshToken, new CookieOptions
         {
