@@ -707,6 +707,19 @@ public class BookingsController : ControllerBase
         if (booking.Status != "confirmed")
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Only confirmed bookings can be marked as completed" });
 
+        // "Completed" means the venue was used and the visit is settled. Letting it through
+        // with a balance outstanding is how a booking that genuinely still owes money stops
+        // being visible as owed at all — CustomersController's owing calculation only
+        // considers attended bookings, and completed always counts as attended. Collect the
+        // rest at the counter, THEN tap complete.
+        var remaining = Math.Round(booking.TotalAmount - booking.AmountPaid, 3);
+        if (remaining > PaymentLedger.Epsilon)
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = $"Cannot mark completed — {remaining:0.###} JOD still unpaid",
+            });
+
         booking.Status = "completed";
         await _db.SaveChangesAsync();
 
