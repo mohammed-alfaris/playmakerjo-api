@@ -255,6 +255,30 @@ if (args.Contains("--seed"))
     return;
 }
 
+// Seed command: dotnet run -- --seed-demo-owner
+//
+// The opposite shape of --seed: additive only, never drops anything, and safe to run
+// against Production — it checks for its own owner email and no-ops if already present.
+// Used to populate a database (e.g. right after a --seed refusal, or on a freshly wiped
+// Production instance) with one realistic venue_owner + customer book to click through.
+if (args.Contains("--seed-demo-owner"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+
+    var email = Environment.GetEnvironmentVariable("DEMO_OWNER_EMAIL") ?? "demo.owner@playmakerjo.com";
+    var password = Environment.GetEnvironmentVariable("DEMO_OWNER_PASSWORD");
+    if (string.IsNullOrWhiteSpace(password))
+    {
+        password = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
+        Console.WriteLine($"[demo-seed] DEMO_OWNER_PASSWORD not set — generated password: {password}");
+    }
+
+    Console.WriteLine(await SportsVenueApi.Data.DemoOwnerSeed.Run(db, email, password));
+    return;
+}
+
 // Auto-apply pending migrations on startup
 using (var scope = app.Services.CreateScope())
 {
