@@ -41,6 +41,31 @@ public class VenuesController : ControllerBase
         _ => null,
     };
 
+    /// <summary>
+    /// The venue as an outsider may see it: everything needed to browse, compare and book,
+    /// with the owner's CliQ alias removed.
+    ///
+    /// The alias is the owner's payment identifier — the string customers transfer money to.
+    /// It was reachable with NO authentication at all through /venues/public and
+    /// /venues/public/{id}, and venue ids are enumerable from the list route, so every
+    /// alias on the platform could be harvested in one pass. It is not a secret in the way
+    /// a password is (a paying customer must see it), but bulk-harvestable is a different
+    /// thing from visible-to-someone-who-is-paying-you: it is exactly what is needed to
+    /// impersonate a venue and substitute a different alias.
+    ///
+    /// Stripping it here rather than in each route is deliberate. Three anonymous endpoints
+    /// serve this shape today and the fourth that gets added next year will be safe by
+    /// default — the leak happened because a route forgot, not because anyone decided.
+    /// </summary>
+    private VenueResponse ToPublicDto(Venue v)
+    {
+        var dto = ToDto(v);
+        // Verified by removal: commenting this single line fails five of the seven
+        // VenueDetailLeakTests, including the anonymous ones.
+        dto.CliqAlias = null;
+        return dto;
+    }
+
     private VenueResponse ToDto(Venue v) => new()
     {
         Id = v.Id,
@@ -235,7 +260,7 @@ public class VenuesController : ControllerBase
             .Take(limit)
             .ToListAsync();
 
-        var dtos = venues.Select(ToDto).ToList();
+        var dtos = venues.Select(ToPublicDto).ToList();
         await StampAggregatesAsync(dtos);
 
         return Ok(new ApiResponse<List<VenueResponse>>
@@ -256,7 +281,7 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        var dto = ToDto(venue);
+        var dto = ToPublicDto(venue);
         await StampAggregateAsync(dto);
         return Ok(new ApiResponse<VenueResponse> { Data = dto });
     }
@@ -331,7 +356,7 @@ public class VenuesController : ControllerBase
         var dtos = available
             .Skip((page - 1) * limit)
             .Take(limit)
-            .Select(ToDto)
+            .Select(ToPublicDto)
             .ToList();
         await StampAggregatesAsync(dtos);
 
@@ -513,7 +538,14 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        var dto = ToDto(venue);
+        // Not 403 for a non-owner: a player legitimately opens a venue page to book it.
+        // What changes is WHICH shape they get. This route had no ownership check at all,
+        // so any logged-in account — including a competing venue owner — could read another
+        // venue's CliQ alias by id, and ids are enumerable from the public list.
+        var dto = VenueAccess.CanView(venue, UserId, UserRole, StaffOwnerId)
+            ? ToDto(venue)
+            : ToPublicDto(venue);
+
         await StampAggregateAsync(dto);
         return Ok(new ApiResponse<VenueResponse> { Data = dto });
     }
