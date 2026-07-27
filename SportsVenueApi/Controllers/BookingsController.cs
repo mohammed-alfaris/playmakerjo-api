@@ -755,20 +755,26 @@ public class BookingsController : ControllerBase
         if (booking.Status != "confirmed")
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Only confirmed bookings can be marked as completed" });
 
-        // "Completed" means the venue was used and the visit is settled. Letting it through
-        // with a balance outstanding is how a booking that genuinely still owes money stops
-        // being visible as owed at all — CustomersController's owing calculation only
-        // considers attended bookings, and completed always counts as attended. Collect the
-        // rest at the counter, THEN tap complete.
+        // Completing a booking is ONE act at the counter, not two: the customer played and he
+        // paid. So any outstanding balance is collected here rather than being a precondition
+        // the owner has to satisfy with a separate tap first.
+        //
+        // This is what makes the "owed" figure work. Owed counts attended-but-underpaid
+        // manual bookings, and completed always counts as attended — so if completing could
+        // leave a balance behind, a real debt would silently stop being visible the moment the
+        // owner marked the visit done. The customer who played and did NOT pay is represented
+        // by simply not completing the booking: it stays confirmed, the date passes, and the
+        // derived "attended" rule picks it up as owed. Absence of this tap IS the debt.
         var remaining = Math.Round(booking.TotalAmount - booking.AmountPaid, 3);
-        if (remaining > PaymentLedger.Epsilon)
-            return BadRequest(new ApiResponse<object>
-            {
-                Success = false,
-                Message = $"Cannot mark completed — {remaining:0.###} JOD still unpaid",
-            });
+        var receipt = remaining > PaymentLedger.Epsilon
+            ? PaymentLedger.Settle(
+                booking, booking.TotalAmount, "balance", UserId, "Collected on completion", "cash")
+            : null;
+        if (receipt != null) _db.Payments.Add(receipt);
 
         booking.Status = "completed";
+        // One SaveChanges: the status and its matching ledger row commit together or not at
+        // all. Splitting them is how a booking ends up completed with the money unrecorded.
         await _db.SaveChangesAsync();
 
         try { await _notifications.NotifyBookingCompleted(booking); }
@@ -777,7 +783,9 @@ public class BookingsController : ControllerBase
         return Ok(new ApiResponse<BookingResponse>
         {
             Data = ToDto(booking),
-            Message = "Booking marked as completed"
+            Message = receipt != null
+                ? $"Booking completed — {receipt.Amount:0.###} JOD collected"
+                : "Booking marked as completed"
         });
     }
 
