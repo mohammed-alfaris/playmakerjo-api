@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
+using SportsVenueApi.Constants;
 using SportsVenueApi.DTOs;
+using SportsVenueApi.DTOs.Bookings;
 using SportsVenueApi.DTOs.Venues;
 using SportsVenueApi.Tests.Infrastructure;
 
@@ -124,5 +126,67 @@ public class VenueDetailLeakTests
         var dto = await GetVenue(otherStaff, $"/api/v1/venues/{venue.Id}");
 
         Assert.Null(dto!.CliqAlias);
+    }
+
+    // ------------------------------------------------- the same alias, via the booking DTO
+    //
+    // Closing the venue routes left the alias on the venue stub nested inside every booking
+    // response, where nothing checked the caller at all. That reopened the whole leak through
+    // a different door, and at lower cost to the attacker: venue ids come from the anonymous
+    // list, POST /bookings has no ownership check on the player path, so a free account could
+    // mint a booking against any venue, read the alias off the response, and cancel.
+
+    private static object PlayerBooking(string venueId, string startTime) => new
+    {
+        venueId,
+        sport = "basketball",
+        date = PlatformConstants.JordanToday().AddDays(13).ToString("yyyy-MM-dd"),
+        startTime,
+        duration = 60,
+        paymentMethod = "cliq",
+    };
+
+    private async Task<BookingResponse?> Book(HttpClient client, string venueId, string startTime)
+    {
+        var res = await client.PostAsJsonAsync("/api/v1/bookings", PlayerBooking(venueId, startTime));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        return (await res.Content.ReadFromJsonAsync<ApiResponse<BookingResponse>>())!.Data;
+    }
+
+    [Fact]
+    public async Task APlayersOwnBookingDoesNotCarryTheVenuesAlias()
+    {
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId, v => v.CliqAlias = "booking-leak@cliq");
+        var player = await _fx.CreatePlayer();
+        var client = _fx.CreateClientFor(player.Id, "player");
+
+        var booking = await Book(client, venue.Id, "09:00");
+
+        Assert.NotNull(booking);
+        Assert.Null(booking!.Venue.CliqAlias);
+    }
+
+    [Fact]
+    public async Task ARivalOwnerCannotHarvestTheAliasByBookingTheVenue()
+    {
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId, v => v.CliqAlias = "rival-harvest@cliq");
+        var rival = _fx.CreateClientFor(_fx.OwnerBId, "venue_owner");
+
+        var booking = await Book(rival, venue.Id, "09:30");
+
+        Assert.NotNull(booking);
+        Assert.Null(booking!.Venue.CliqAlias);
+    }
+
+    [Fact]
+    public async Task TheOwnerStillSeesTheAliasOnHisOwnBookings()
+    {
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId, v => v.CliqAlias = "mine-booking@cliq");
+        var owner = _fx.CreateClientFor(_fx.OwnerAId, "venue_owner");
+
+        var booking = await Book(owner, venue.Id, "10:30");
+
+        // The strip must not break the screen that shows the owner where money arrives.
+        Assert.Equal("mine-booking@cliq", booking!.Venue.CliqAlias);
     }
 }

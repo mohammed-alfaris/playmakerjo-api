@@ -1469,6 +1469,14 @@ public class BookingsController : ControllerBase
             resolvedPitchId = first?.Id;
         }
 
+        // Is the caller on the venue's own side of the counter — its owner, that
+        // owner's linked staff, or an admin? Two fields below are back-office only,
+        // and both used to travel to every caller who could reach a booking.
+        // Fails closed: an unloaded Venue navigation yields no back-office access
+        // rather than an accidental grant.
+        var isBackOffice = b.Venue != null
+            && VenueAccess.CanView(b.Venue, UserId, UserRole, StaffOwnerId);
+
         var dto = new BookingResponse
         {
             Id = b.Id,
@@ -1480,12 +1488,20 @@ public class BookingsController : ControllerBase
                 City = b.Venue.City,
                 CityAr = b.Venue.CityAr,
                 Images = b.Venue.Images?.Select(x => UploadUrlHelper.Normalize(x, _uploadsBaseUrl)).ToList()!,
-                CliqAlias = b.Venue.CliqAlias
+                // The alias was stripped from the venue routes and left here, so it
+                // stayed harvestable: POST a booking against any venue id, read it
+                // off the 201, cancel. Venue ids come from the anonymous public list,
+                // so a free account could sweep the whole platform.
+                CliqAlias = isBackOffice ? b.Venue.CliqAlias : null
             },
             Player = new PlayerRef { Id = b.Player.Id, Name = b.Player.Name },
-            Customer = b.Customer == null
-                ? null
-                : new CustomerRef { Id = b.Customer.Id, Name = b.Customer.Name, Phone = b.Customer.Phone },
+            // The customer book belongs to the venue, not to whoever is holding the
+            // slot. A player's profile phone is self-asserted and unverified, so
+            // returning the matched customer told them the name behind any number
+            // they cared to type. Players learn nothing here they did not supply.
+            Customer = isBackOffice && b.Customer != null
+                ? new CustomerRef { Id = b.Customer.Id, Name = b.Customer.Name, Phone = b.Customer.Phone }
+                : null,
             Sport = b.Sport,
             PitchId = resolvedPitchId,
             Date = b.Date.ToString("yyyy-MM-dd"),

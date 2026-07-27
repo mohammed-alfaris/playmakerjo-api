@@ -22,7 +22,14 @@ public class VenueRef
     [JsonPropertyName("images")]
     public List<string> Images { get; set; } = [];
 
+    /// <summary>
+    /// The venue's CliQ payment alias. Populated only for the venue's own side —
+    /// owner, their staff, admin. Omitted from the payload entirely rather than
+    /// sent as null, so a client cannot tell a stripped response from a venue
+    /// that has not set one.
+    /// </summary>
     [JsonPropertyName("cliqAlias")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CliqAlias { get; set; }
 }
 
