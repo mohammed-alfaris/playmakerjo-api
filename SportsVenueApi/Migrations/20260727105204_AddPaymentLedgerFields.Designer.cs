@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SportsVenueApi.Data;
 
@@ -11,9 +12,11 @@ using SportsVenueApi.Data;
 namespace SportsVenueApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260727105204_AddPaymentLedgerFields")]
+    partial class AddPaymentLedgerFields
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -36,10 +39,6 @@ namespace SportsVenueApi.Migrations
                     b.Property<double>("AmountPaid")
                         .HasColumnType("double")
                         .HasColumnName("amount_paid");
-
-                    b.Property<DateTime?>("AutoCancelledAt")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("auto_cancelled_at");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)")
@@ -77,10 +76,6 @@ namespace SportsVenueApi.Migrations
                     b.Property<double>("OwnerAmount")
                         .HasColumnType("double")
                         .HasColumnName("owner_amount");
-
-                    b.Property<DateTime?>("PaymentDeadlineAt")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("payment_deadline_at");
 
                     b.Property<string>("PaymentMethod")
                         .HasMaxLength(50)
@@ -162,8 +157,6 @@ namespace SportsVenueApi.Migrations
                     b.HasIndex("VenueId");
 
                     b.HasIndex("CustomerId", "Date");
-
-                    b.HasIndex("PaymentDeadlineAt", "Status");
 
                     b.ToTable("bookings");
                 });

@@ -154,6 +154,41 @@ public class NotificationService
         );
     }
 
+    /// <summary>
+    /// The unpaid booking held a slot until its deadline and has been released.
+    ///
+    /// Deliberately NOT reusing NotifyBookingCancelled: that method notifies the player AND
+    /// the venue owner, suppressing whichever one performed the cancellation by comparing
+    /// against an actor id. A background job has no actor id, so it would notify both — and
+    /// on a manual booking, where PlayerId holds the owner's own id, that means telling the
+    /// same person twice about a booking they never made.
+    ///
+    /// This one reaches the player only. The owner finds out by looking at a schedule with
+    /// a free slot in it, which is the outcome he wanted; a push at 2am about money that
+    /// never arrived is noise.
+    ///
+    /// The type string stays "booking_cancelled" on purpose. It is what the mobile client
+    /// routes on, it is free-form with no validation, and from the player's side this IS a
+    /// cancellation — a new string would just be an unhandled case in the app.
+    /// </summary>
+    public async Task NotifyBookingExpired(Booking booking)
+    {
+        var venue = booking.Venue?.Name ?? "the venue";
+        var date = booking.Date.ToString("MMM dd");
+        var time = booking.StartTime ?? "";
+
+        await CreateNotification(
+            booking.PlayerId,
+            Bi("Booking Released", "تم إلغاء الحجز"),
+            Bi(
+                $"Your unpaid booking at {venue} on {date} {time} has been released. You can book again any time.",
+                $"تم إلغاء حجزك غير المدفوع في {venue} بتاريخ {date} {time}. تقدر تحجز من جديد بأي وقت."
+            ),
+            "booking_cancelled",
+            booking.Id
+        );
+    }
+
     public async Task NotifyProofReceived(Booking booking)
     {
         if (booking.Venue != null)

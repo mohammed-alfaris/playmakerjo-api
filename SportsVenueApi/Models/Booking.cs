@@ -19,6 +19,20 @@ public class Booking
     [MaxLength(32)]
     public string PlayerId { get; set; } = "";
 
+    /// <summary>
+    /// The venue-side customer record, when one is known. Nullable and ADDITIVE — it sits
+    /// beside <see cref="PlayerId"/> rather than replacing it.
+    ///
+    /// PlayerId stays non-nullable and keeps holding the owner's own id on manual rows.
+    /// Making it nullable would mean auditing all 13 <c>.Include(b => b.Player)</c> sites and
+    /// two unguarded <c>b.Player.Name</c> dereferences for no gain, and would break the path
+    /// the mobile app will use. Bookings that arrive from the app simply carry a null
+    /// CustomerId; bookings taken at the counter carry both.
+    /// </summary>
+    [Column("customer_id")]
+    [MaxLength(32)]
+    public string? CustomerId { get; set; }
+
     [Column("sport")]
     [MaxLength(100)]
     public string? Sport { get; set; }
@@ -90,12 +104,69 @@ public class Booking
     [MaxLength(50)]
     public string Status { get; set; } = "pending";
 
+    /// <summary>
+    /// Taken at the counter / by phone rather than through the player app.
+    ///
+    /// This used to exist only as a request flag, consumed at creation and then thrown
+    /// away, so afterwards nothing could tell the two channels apart — you could only
+    /// infer it from the fee being zero, which breaks the moment the platform fee is set
+    /// to 0%. Recording it makes "how many of my customers have moved to the app" a real
+    /// question the owner can answer.
+    ///
+    /// Rows created before this column existed default to false; historical channel data
+    /// is simply not recoverable, and guessing it from the fee would be worse than absent.
+    /// </summary>
+    [Column("is_manual")]
+    public bool IsManual { get; set; }
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// When this unpaid app booking loses its slot, as a UTC instant. NULL means IMMUNE —
+    /// permanently, not "not yet due".
+    ///
+    /// This is the entire safety model of the expiry job, and it is deliberately the
+    /// opposite of how such a job is usually written. The obvious approach is to infer
+    /// eligibility at sweep time from status + age, but every one of those inferences is
+    /// wrong for some legitimate row: a counter booking is MEANT to sit unpaid
+    /// (BookingsController.cs:597), a rejected proof returns a booking to pending_payment
+    /// with CreatedAt unchanged so "time in this state" is unknowable, and one abandoned
+    /// recurring checkout is three months of rows sharing a single CreatedAt.
+    ///
+    /// So nothing is inferred. Only the app-booking path arms a row, and only while it is
+    /// genuinely waiting on a customer to pay. Every historical row, every counter booking
+    /// and every recurring occurrence carries NULL and is therefore safe BY CONSTRUCTION,
+    /// not because a WHERE clause remembered to exclude them.
+    ///
+    /// Do not backfill this column. Doing so arms every row it touches.
+    /// </summary>
+    [Column("payment_deadline_at")]
+    public DateTime? PaymentDeadlineAt { get; set; }
+
+    /// <summary>
+    /// Set when the expiry job — not a human — cancelled this booking.
+    ///
+    /// The job writes Status = "cancelled" because that is the ONLY literal that actually
+    /// frees a slot: all five occupancy predicates across three controllers are written as
+    /// <c>Status != "cancelled"</c> (BookingsController.cs:437, :1238; VenuesController.cs:310,
+    /// :687; PermanentBookingsController.cs:307), so a new "expired" status would leave the
+    /// pitch blocked forever while the job reported success.
+    ///
+    /// Reusing "cancelled" would otherwise collapse "the customer changed their mind" into
+    /// "we timed them out" everywhere, including the per-customer cancelled count. This
+    /// column is what keeps those two apart.
+    /// </summary>
+    [Column("auto_cancelled_at")]
+    public DateTime? AutoCancelledAt { get; set; }
 
     [ForeignKey("VenueId")]
     public Venue Venue { get; set; } = null!;
 
     [ForeignKey("PlayerId")]
     public User Player { get; set; } = null!;
+
+    /// <summary>Nullable by design — see <see cref="CustomerId"/>.</summary>
+    [ForeignKey("CustomerId")]
+    public Customer? Customer { get; set; }
 }

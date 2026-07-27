@@ -35,6 +35,18 @@ public class PlayerRef
     public string Name { get; set; } = "";
 }
 
+public class CustomerRef
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = "";
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    [JsonPropertyName("phone")]
+    public string Phone { get; set; } = "";
+}
+
 public class BookingResponse
 {
     [JsonPropertyName("id")]
@@ -45,6 +57,15 @@ public class BookingResponse
 
     [JsonPropertyName("player")]
     public PlayerRef Player { get; set; } = null!;
+
+    /// <summary>
+    /// The venue-side customer, when one was recorded. Null for app bookings and for
+    /// walk-ins taken before customer records existed — so every consumer must fall back to
+    /// <see cref="Player"/>, and on a legacy manual booking that fallback is the OWNER'S own
+    /// name, which is exactly the display bug this field exists to end.
+    /// </summary>
+    [JsonPropertyName("customer")]
+    public CustomerRef? Customer { get; set; }
 
     [JsonPropertyName("sport")]
     public string? Sport { get; set; }
@@ -112,6 +133,27 @@ public class BookingResponse
     [JsonPropertyName("status")]
     public string Status { get; set; } = "";
 
+    /// <summary>Taken at the counter or by phone, rather than through the player app.</summary>
+    [JsonPropertyName("isManual")]
+    public bool IsManual { get; set; }
+
+    /// <summary>
+    /// When this unpaid hold is released, if it is one. Null on everything else — counter
+    /// bookings, recurring series, anything already paid or awaiting proof review.
+    /// </summary>
+    [JsonPropertyName("paymentDeadlineAt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PaymentDeadlineAt { get; set; }
+
+    /// <summary>
+    /// Set when the expiry job released this booking rather than a person cancelling it.
+    /// Both write status "cancelled" — this is the only thing that tells them apart, so a
+    /// client must read it before printing "cancelled" to an owner.
+    /// </summary>
+    [JsonPropertyName("autoCancelledAt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AutoCancelledAt { get; set; }
+
     [JsonPropertyName("createdAt")]
     public string CreatedAt { get; set; } = "";
 }
@@ -163,10 +205,47 @@ public class CreateBookingRequest
     /// <summary>
     /// Admin/owner-created walk-in booking. When true the booking is created
     /// as "confirmed" immediately and the platform fee is 0 (100% goes to the owner).
-    /// Only honoured for super_admin or the venue's own owner.
+    /// Only honoured for super_admin, the venue's own owner, or their staff with "write".
     /// </summary>
     [JsonPropertyName("isManual")]
     public bool IsManual { get; set; }
+
+    /// <summary>
+    /// Who the booking is for, as typed at the counter. Honoured ONLY on the already
+    /// authorised manual path — a player sending these is silently ignored, so nobody can
+    /// write into someone else's customer book.
+    ///
+    /// A number that is not a recognisable Jordanian mobile is dropped rather than
+    /// rejected: the booking must never fail because the person standing at the counter
+    /// has a Syrian SIM or gave a landline.
+    /// </summary>
+    [JsonPropertyName("customerPhone")]
+    public string? CustomerPhone { get; set; }
+
+    [JsonPropertyName("customerName")]
+    public string? CustomerName { get; set; }
+
+    /// <summary>
+    /// Manual bookings only: did the customer actually hand over the money now?
+    ///
+    /// Every manual booking used to be recorded as paid in full the instant it was created.
+    /// That is right for someone standing at the counter with cash, and wrong for the more
+    /// common case — a phone call on Sunday for a slot next Tuesday, paid on arrival. The
+    /// consequence was that the most expensive kind of no-show (booked, never paid, never
+    /// turned up) was recorded as fully settled, and revenue reports counted money that had
+    /// not arrived.
+    ///
+    /// Defaults to true so existing callers keep their current behaviour.
+    /// </summary>
+    [JsonPropertyName("customerPaid")]
+    public bool CustomerPaid { get; set; } = true;
+}
+
+public class AttendanceConfirmRequest
+{
+    /// <summary>The past bookings the owner is confirming everyone turned up for.</summary>
+    [JsonPropertyName("bookingIds")]
+    public List<string>? BookingIds { get; set; }
 }
 
 public class CreateRecurringBookingRequest

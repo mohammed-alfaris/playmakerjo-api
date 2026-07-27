@@ -144,29 +144,48 @@ public static class SeedData
         db.Bookings.AddRange(bookings);
         await db.SaveChangesAsync();
 
-        var payments = new List<Payment>
+        // Payments are DERIVED from the bookings above rather than hand-listed, so the
+        // seeded ledger obeys the same invariant the application enforces: the rows for a
+        // booking sum exactly to its amount_paid.
+        //
+        // The list this replaces did not. It recorded 50 JOD against b1 while b1 itself
+        // said nothing had been paid, and carried "pending" and "refunded" rows — neither
+        // of which an append-only record of money RECEIVED can contain. Money not yet
+        // arrived is represented by the absence of a row, which is what the untouched
+        // pending_payment bookings already do. A demo where the payments page and the
+        // bookings page contradict each other is worse than a demo with no payments.
+        var payments = new List<Payment>();
+        var seq = 0;
+
+        foreach (var b in bookings.Where(x => x.DepositPaid))
         {
-            new() { Id = "p1",  BookingId = "b1",  PlayerId = "u8",  Amount = 50,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-29).AddHours(16) },
-            new() { Id = "p2",  BookingId = "b2",  PlayerId = "u9",  Amount = 30,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-27).AddHours(10) },
-            new() { Id = "p3",  BookingId = "b3",  PlayerId = "u11", Amount = 18,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-25).AddHours(18) },
-            new() { Id = "p4",  BookingId = "b4",  PlayerId = "u12", Amount = 50,  Method = "Cliq", Status = "refunded", Date = today.AddDays(-23).AddHours(17) },
-            new() { Id = "p5",  BookingId = "b5",  PlayerId = "u13", Amount = 44,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-21).AddHours(9) },
-            new() { Id = "p6",  BookingId = "b6",  PlayerId = "u14", Amount = 140, Method = "Cliq", Status = "paid",     Date = today.AddDays(-19).AddHours(8) },
-            new() { Id = "p7",  BookingId = "b7",  PlayerId = "u15", Amount = 40,  Method = "Cliq", Status = "pending",  Date = today.AddDays(-18).AddHours(7) },
-            new() { Id = "p8",  BookingId = "b8",  PlayerId = "u8",  Amount = 60,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-17).AddHours(15) },
-            new() { Id = "p9",  BookingId = "b9",  PlayerId = "u9",  Amount = 18,  Method = "Cliq", Status = "pending",  Date = today.AddDays(-15).AddHours(19) },
-            new() { Id = "p10", BookingId = "b10", PlayerId = "u11", Amount = 50,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-14).AddHours(16) },
-            new() { Id = "p11", BookingId = "b11", PlayerId = "u12", Amount = 22,  Method = "Cliq", Status = "pending",  Date = today.AddDays(-13).AddHours(10) },
-            new() { Id = "p12", BookingId = "b12", PlayerId = "u13", Amount = 105, Method = "Cliq", Status = "paid",     Date = today.AddDays(-11).AddHours(8) },
-            new() { Id = "p13", BookingId = "b13", PlayerId = "u14", Amount = 80,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-10).AddHours(6) },
-            new() { Id = "p14", BookingId = "b14", PlayerId = "u15", Amount = 30,  Method = "Cliq", Status = "refunded", Date = today.AddDays(-9).AddHours(17) },
-            new() { Id = "p15", BookingId = "b15", PlayerId = "u8",  Amount = 50,  Method = "Cliq", Status = "pending",  Date = today.AddDays(-8).AddHours(18) },
-            new() { Id = "p16", BookingId = "b16", PlayerId = "u9",  Amount = 18,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-7).AddHours(20) },
-            new() { Id = "p17", BookingId = "b17", PlayerId = "u11", Amount = 44,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-6).AddHours(9) },
-            new() { Id = "p18", BookingId = "b18", PlayerId = "u12", Amount = 140, Method = "Cliq", Status = "paid",     Date = today.AddDays(-5).AddHours(8) },
-            new() { Id = "p19", BookingId = "b19", PlayerId = "u13", Amount = 40,  Method = "Cliq", Status = "pending",  Date = today.AddDays(-4).AddHours(7) },
-            new() { Id = "p20", BookingId = "b20", PlayerId = "u14", Amount = 60,  Method = "Cliq", Status = "paid",     Date = today.AddDays(-3).AddHours(14) },
-        };
+            var ownerId = venues.First(v => v.Id == b.VenueId).OwnerId;
+            var paidAt = b.Date.AddHours(-6);
+
+            // Everyone pays the deposit up front; those who turned up settled the rest on
+            // the day. Two rows on one booking is the case most worth having in demo data,
+            // because it is the one a single amount_paid column cannot express.
+            payments.Add(new Payment
+            {
+                Id = $"p{++seq}", BookingId = b.Id, PlayerId = b.PlayerId, VenueId = b.VenueId,
+                RecordedByUserId = ownerId, Amount = b.DepositAmount, Method = "cliq",
+                Kind = "deposit", Status = "paid", Note = "CliQ proof approved", Date = paidAt,
+            });
+            b.AmountPaid = b.DepositAmount;
+
+            if (b.Status == "completed")
+            {
+                var balance = Math.Round(b.TotalAmount - b.DepositAmount, 3);
+                payments.Add(new Payment
+                {
+                    Id = $"p{++seq}", BookingId = b.Id, PlayerId = b.PlayerId, VenueId = b.VenueId,
+                    RecordedByUserId = ownerId, Amount = balance, Method = "cash",
+                    Kind = "balance", Status = "paid", Note = "Settled at the venue",
+                    Date = b.Date.AddHours(1),
+                });
+                b.AmountPaid = b.TotalAmount;
+            }
+        }
 
         db.Payments.AddRange(payments);
         await db.SaveChangesAsync();
