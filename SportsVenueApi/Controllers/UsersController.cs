@@ -60,7 +60,38 @@ public class UsersController : ControllerBase
             return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
 
         if (req.Name != null) user.Name = req.Name.Trim();
-        if (req.Phone != null) user.Phone = req.Phone.Trim();
+
+        // The phone is an identity key, not a display field: an app booking resolves
+        // the venue's customer record from it. Written raw and unchecked, anyone could
+        // type a regular's number, book a slot, and have their bookings — and their
+        // no-shows — merge into that person's history at the venue.
+        //
+        // Normalising here means the value is compared in the same canonical form the
+        // customer book uses, so "0791234567" and "+962791234567" cannot be two people.
+        if (req.Phone != null && req.Phone.Trim() != user.Phone)
+        {
+            // Only validated when it actually changes: the dashboard PATCHes the whole
+            // profile back, and a user whose stored number predates this rule must still
+            // be able to edit their name.
+            var normalized = PhoneNormalizer.ToE164Jo(req.Phone);
+            if (normalized == null)
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "Enter a valid Jordanian mobile number."
+                });
+
+            var takenByAnother = await _db.Users
+                .AnyAsync(u => u.Id != user.Id && u.Phone == normalized);
+            if (takenByAnother)
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "That mobile number is already in use."
+                });
+
+            user.Phone = normalized;
+        }
         if (req.Avatar != null) user.Avatar = req.Avatar;
         if (req.PreferredLanguage != null && (req.PreferredLanguage == "en" || req.PreferredLanguage == "ar"))
             user.PreferredLanguage = req.PreferredLanguage;
