@@ -50,6 +50,16 @@ public class PermanentBooking
     [Column("label_ar", TypeName = "text")]
     public string? LabelAr { get; set; }
 
+    /// <summary>
+    /// The customer holding this standing slot, when known. This is where the owner's
+    /// "Khalid every Tuesday" actually lives — until now it was only the free-text
+    /// <see cref="Label"/>, so when a weekly regular quietly stopped coming there was
+    /// nothing to notice it with. Nullable: legacy rows keep rendering from Label.
+    /// </summary>
+    [Column("customer_id")]
+    [MaxLength(32)]
+    public string? CustomerId { get; set; }
+
     [Column("status")]
     [MaxLength(20)]
     public string Status { get; set; } = "active"; // active|cancelled
