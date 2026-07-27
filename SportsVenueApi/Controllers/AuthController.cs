@@ -79,6 +79,11 @@ public class AuthController : ControllerBase
             return Unauthorized(new ApiResponse<object> { Success = false, Message = "Invalid Google token" });
         }
 
+        // Only trust Google emails Google itself has verified — otherwise a spoofed
+        // unverified address could hijack/provision an account.
+        if (payload.EmailVerified != true)
+            return Unauthorized(new ApiResponse<object> { Success = false, Message = "Google email not verified" });
+
         var email = (payload.Email ?? "").Trim().ToLowerInvariant();
         if (string.IsNullOrEmpty(email))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Google account has no email" });

@@ -84,7 +84,11 @@ public class RateLimitTests : IDisposable
 
     private static MultipartFormDataContent UploadForm()
     {
-        var file = new ByteArrayContent([0x89, 0x50, 0x4E, 0x47]);
+        // The complete 8-byte PNG signature. This was the first four bytes only, which
+        // is not a valid PNG header — it passed when uploads trusted the extension and
+        // never looked at the content. This test is about the rate limiter, so the
+        // payload has to clear content validation to reach it.
+        var file = new ByteArrayContent([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
         file.Headers.ContentType = new MediaTypeHeaderValue("image/png");
         return new MultipartFormDataContent
         {

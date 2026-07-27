@@ -5,15 +5,33 @@ namespace SportsVenueApi.Data;
 
 public static class SeedData
 {
+    /// <summary>
+    /// Seed passwords come from env vars; if unset, generate a random one and print
+    /// it once so local/dev seeding still works without committing credentials.
+    ///
+    /// These were literals in this file — on a public repo, which meant the platform's
+    /// super_admin password sat in every clone, tied to a real personal email. Note
+    /// that removing them here only stops FUTURE exposure: git history is permanent,
+    /// so the old values must be treated as burned and rotated wherever they were used.
+    /// </summary>
+    private static string SeedPassword(string envVar, string label)
+    {
+        var fromEnv = Environment.GetEnvironmentVariable(envVar);
+        if (!string.IsNullOrWhiteSpace(fromEnv)) return fromEnv;
+        var generated = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
+        Console.WriteLine($"[seed] {envVar} not set — generated {label} password: {generated}");
+        return generated;
+    }
+
     public static async Task Initialize(AppDbContext db)
     {
         // Drop and recreate via migrations
         await db.Database.EnsureDeletedAsync();
         await db.Database.MigrateAsync();
 
-        var adminHash = BCrypt.Net.BCrypt.HashPassword("M7md.272");
-        var ownerHash = BCrypt.Net.BCrypt.HashPassword("owner123");
-        var playerHash = BCrypt.Net.BCrypt.HashPassword("password123");
+        var adminHash = BCrypt.Net.BCrypt.HashPassword(SeedPassword("SEED_ADMIN_PASSWORD", "super_admin"));
+        var ownerHash = BCrypt.Net.BCrypt.HashPassword(SeedPassword("SEED_OWNER_PASSWORD", "venue_owner"));
+        var playerHash = BCrypt.Net.BCrypt.HashPassword(SeedPassword("SEED_PLAYER_PASSWORD", "player"));
 
         var users = new List<User>
         {
