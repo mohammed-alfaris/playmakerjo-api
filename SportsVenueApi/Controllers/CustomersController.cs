@@ -95,12 +95,25 @@ public class CustomersController : ControllerBase
             s.NoShow = rows.Count(r => r.Status == "no_show");
 
             // Presence assumed, absence declared — see CustomerStats.Attended.
-            s.Attended = rows.Count(r =>
-                r.Status == "completed" || (r.Status == "confirmed" && r.Date.Date < today));
+            bool Attended(BookingFact r) => r.Status == "completed" || (r.Status == "confirmed" && r.Date.Date < today);
+
+            s.Attended = rows.Count(Attended);
 
             s.Upcoming = rows.Count(r => r.Status == "confirmed" && r.Date.Date >= today);
 
-            var owing = live.Where(r => r.AmountPaid + 0.001 < r.TotalAmount).ToList();
+            // "Owed" means one specific thing: he played at the counter and still hasn't
+            // settled up. Two other unpaid-looking cases must NOT count as owed:
+            //   - Not yet attended (upcoming confirmed, or pending_payment) — nothing has
+            //     been rendered yet, so there is nothing to have paid for. That state is
+            //     already visible via Upcoming / the booking's own status.
+            //   - No-show — he didn't come, so "still owes for the match" is meaningless;
+            //     that is what NoShow is for, and conflating the two hid genuine no-shows
+            //     inside a dinar figure that read as unpaid revenue.
+            // App bookings are excluded outright: payment there is enforced by the
+            // platform's own flow (deposit/CliQ proof) before or at booking time, not by
+            // the owner deciding to let someone play on credit — he has no lever over it,
+            // so it is not his receivable to chase.
+            var owing = live.Where(r => r.IsManual && Attended(r) && r.AmountPaid + 0.001 < r.TotalAmount).ToList();
             s.Unpaid = owing.Count;
             s.AmountOwed = Math.Round(owing.Sum(r => r.TotalAmount - r.AmountPaid), 3);
 

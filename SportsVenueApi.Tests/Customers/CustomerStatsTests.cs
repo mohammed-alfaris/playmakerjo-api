@@ -157,6 +157,55 @@ public class CustomerStatsTests
         Assert.Equal(0, stats.AmountOwed, 3);
     }
 
+    [Fact]
+    public async Task NoShow_IsNeverCountedAsOwing()
+    {
+        // He didn't come, so "still owes for the match" is a category error — that state
+        // is NoShow, not a receivable. Before this, an unpaid no-show inflated AmountOwed
+        // with money nobody is going to collect for a match that never happened.
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
+        var customer = await NewCustomer(_fx.OwnerAId);
+        await Seed(venue.Id, customer.Id, daysAgo: 3, "no_show", total: 30, paid: 0);
+
+        var stats = await StatsFor(customer.Id);
+        Assert.Equal(1, stats.NoShow);
+        Assert.Equal(0, stats.Unpaid);
+        Assert.Equal(0, stats.AmountOwed, 3);
+    }
+
+    [Fact]
+    public async Task UpcomingUnpaidBooking_IsNotOwedYet()
+    {
+        // Nothing has been rendered yet, so there is nothing to have paid for — he still
+        // has until the slot to settle up. Counting a future booking's shortfall as owed
+        // would flag every unpaid-deposit upcoming booking as a debt before it is one.
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
+        var customer = await NewCustomer(_fx.OwnerAId);
+        await Seed(venue.Id, customer.Id, daysAgo: -3, "confirmed", total: 30, paid: 0);
+
+        var stats = await StatsFor(customer.Id);
+        Assert.Equal(1, stats.Upcoming);
+        Assert.Equal(0, stats.Unpaid);
+        Assert.Equal(0, stats.AmountOwed, 3);
+    }
+
+    [Fact]
+    public async Task UnpaidAppBooking_IsNotOwed_TheOwnerHasNoLeverOverIt()
+    {
+        // Payment on an app booking is enforced by the platform's own flow before/at
+        // booking time, not by the owner choosing to let someone play on credit. It is not
+        // his receivable to chase, so it must not appear in his "owing" figure even when it
+        // was, in fact, attended and underpaid.
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
+        var customer = await NewCustomer(_fx.OwnerAId);
+        await Seed(venue.Id, customer.Id, daysAgo: 2, "completed", total: 30, paid: 10, isManual: false);
+
+        var stats = await StatsFor(customer.Id);
+        Assert.Equal(1, stats.Attended);
+        Assert.Equal(0, stats.Unpaid);
+        Assert.Equal(0, stats.AmountOwed, 3);
+    }
+
     // --------------------------------------------------------------------- channel
 
     [Fact]
