@@ -354,35 +354,29 @@ public class BookingsController : ControllerBase
         // both key styles and honours "closed", and is the same code the availability
         // view uses, so the two can no longer disagree.
         var dayName = bookingDate.DayOfWeek.ToString().ToLower();
-        var venueHours = AvailabilityHelper.ResolveHoursForDay(venue.OperatingHours, dayName);
-        var effectiveHours = AvailabilityHelper.ResolvePitchHours(pitch, dayName, venueHours);
-        var slotEnd = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
 
-        if (effectiveHours != null)
+        var hoursCheck = AvailabilityHelper.CheckSlotAgainstHours(
+            venue, pitch, dayName, startTimeSpan, req.Duration);
+        switch (hoursCheck.Verdict)
         {
-            if (!TimeSpan.TryParse(effectiveHours.Open, out var openTime) ||
-                !TimeSpan.TryParse(effectiveHours.Close, out var closeTime))
+            case SlotHoursVerdict.Misconfigured:
                 return BadRequest(new ApiResponse<object>
                 {
                     Success = false,
                     Message = "This venue's operating hours are misconfigured. Please contact the venue."
                 });
-
-            if (startTimeSpan < openTime || slotEnd > closeTime)
+            case SlotHoursVerdict.OutsideHours:
                 return BadRequest(new ApiResponse<object>
                 {
                     Success = false,
-                    Message = $"Booking must be within operating hours ({effectiveHours.Open} - {effectiveHours.Close})"
+                    Message = $"Booking must be within operating hours ({hoursCheck.Open} - {hoursCheck.Close})"
                 });
-        }
-        else if (venue.OperatingHours is { Count: > 0 } || pitch.OperatingHours != null)
-        {
-            // Hours are configured but this day resolves to nothing — the venue is closed.
-            return BadRequest(new ApiResponse<object>
-            {
-                Success = false,
-                Message = "The venue is closed on this day."
-            });
+            case SlotHoursVerdict.Closed:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "The venue is closed on this day."
+                });
         }
 
         // Pitch-size validation. Subdivision is football-only and carried on the pitch.
@@ -1222,33 +1216,29 @@ public class BookingsController : ControllerBase
         // series either. AvailabilityHelper accepts both spellings and honours "closed".
         var endTime = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
         var dayName = startDate.DayOfWeek.ToString().ToLower();
-        var venueHours = AvailabilityHelper.ResolveHoursForDay(venue.OperatingHours, dayName);
-        var effectiveHours = AvailabilityHelper.ResolvePitchHours(pitch, dayName, venueHours);
 
-        if (effectiveHours != null)
+        var hoursCheck = AvailabilityHelper.CheckSlotAgainstHours(
+            venue, pitch, dayName, startTimeSpan, req.Duration);
+        switch (hoursCheck.Verdict)
         {
-            if (!TimeSpan.TryParse(effectiveHours.Open, out var openTime) ||
-                !TimeSpan.TryParse(effectiveHours.Close, out var closeTime))
+            case SlotHoursVerdict.Misconfigured:
                 return BadRequest(new ApiResponse<object>
                 {
                     Success = false,
                     Message = "This venue's operating hours are misconfigured. Please contact the venue."
                 });
-
-            if (startTimeSpan < openTime || endTime > closeTime)
+            case SlotHoursVerdict.OutsideHours:
                 return BadRequest(new ApiResponse<object>
                 {
                     Success = false,
-                    Message = $"Booking must be within operating hours ({effectiveHours.Open} - {effectiveHours.Close})"
+                    Message = $"Booking must be within operating hours ({hoursCheck.Open} - {hoursCheck.Close})"
                 });
-        }
-        else if (venue.OperatingHours is { Count: > 0 } || pitch.OperatingHours != null)
-        {
-            return BadRequest(new ApiResponse<object>
-            {
-                Success = false,
-                Message = "The venue is closed on this day."
-            });
+            case SlotHoursVerdict.Closed:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "The venue is closed on this day."
+                });
         }
 
         // Same serialized critical section as the one-off path. This method already opened

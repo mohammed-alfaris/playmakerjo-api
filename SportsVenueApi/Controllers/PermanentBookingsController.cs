@@ -214,58 +214,31 @@ public class PermanentBookingsController : ControllerBase
 
     /// <summary>
     /// Validate that <c>start + duration</c> fits inside the pitch's (or venue's)
-    /// operating hours for the given anchor date. Mirrors the overnight-aware
-    /// rule used by <c>BookingsController.CreateBooking</c>: when the close time
-    /// is earlier than open, treat it as crossing midnight.
+    /// operating hours for the given anchor date.
+    ///
+    /// This used to carry its own copy of the resolve-and-compare logic — the only
+    /// copy that handled the overnight wrap, while its doc comment claimed to
+    /// mirror <c>BookingsController.CreateBooking</c>, which did not. The two also
+    /// disagreed on pitch-vs-venue precedence and on default open/close times.
+    /// Both now call <see cref="AvailabilityHelper.CheckSlotAgainstHours"/>, so
+    /// a permanent and a one-off booked into the same slot get the same answer.
     /// </summary>
     private static string? ValidateAgainstOperatingHours(
         Venue venue, PitchDto pitch, DateTime anchorDate, TimeSpan startTime, int durationMinutes)
     {
-        var dayShort = anchorDate.DayOfWeek.ToString().ToLower()[..3];
-        var dayFull = anchorDate.DayOfWeek.ToString().ToLower();
+        var dayName = anchorDate.DayOfWeek.ToString().ToLower();
+        var check = AvailabilityHelper.CheckSlotAgainstHours(
+            venue, pitch, dayName, startTime, durationMinutes);
 
-        Dictionary<string, object>? hoursMap = venue.OperatingHours;
-        if (pitch.OperatingHours is Dictionary<string, object> pitchHoursDict)
-            hoursMap = pitchHoursDict;
-        else if (pitch.OperatingHours != null)
+        return check.Verdict switch
         {
-            try
-            {
-                var json = JsonSerializer.Serialize(pitch.OperatingHours);
-                hoursMap = JsonSerializer.Deserialize<Dictionary<string, object>>(json) ?? venue.OperatingHours;
-            }
-            catch { /* fall through */ }
-        }
-
-        if (hoursMap == null) return null; // no hours configured → permissive
-
-        if (!hoursMap.TryGetValue(dayFull, out var dayHoursObj) &&
-            !hoursMap.TryGetValue(dayShort, out dayHoursObj))
-            return null;
-
-        var dayHoursJson = JsonSerializer.Serialize(dayHoursObj);
-        var dayHours = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dayHoursJson);
-        if (dayHours == null) return null;
-
-        if (dayHours.TryGetValue("closed", out var closedEl) && closedEl.ValueKind == JsonValueKind.True)
-            return "Venue is closed on that day";
-
-        string GetStr(string k, string fallback)
-            => dayHours.TryGetValue(k, out var el) && el.ValueKind == JsonValueKind.String
-                ? el.GetString() ?? fallback
-                : fallback;
-
-        if (!TimeSpan.TryParse(GetStr("open", "00:00"), out var openTime) ||
-            !TimeSpan.TryParse(GetStr("close", "23:59"), out var closeTime))
-            return null;
-
-        var endTime = startTime + TimeSpan.FromMinutes(durationMinutes);
-        // Overnight wrap: close <= open means the venue closes the following day.
-        if (closeTime <= openTime) closeTime += TimeSpan.FromHours(24);
-        // If the booking starts before open and would only fit by wrapping, reject.
-        if (startTime < openTime || endTime > closeTime)
-            return $"Booking must be within operating hours ({GetStr("open", "00:00")} - {GetStr("close", "23:59")})";
-        return null;
+            SlotHoursVerdict.Closed => "Venue is closed on that day",
+            SlotHoursVerdict.Misconfigured =>
+                "This venue's operating hours are misconfigured. Please contact the venue.",
+            SlotHoursVerdict.OutsideHours =>
+                $"Booking must be within operating hours ({check.Open} - {check.Close})",
+            _ => null
+        };
     }
 
     /// <summary>
