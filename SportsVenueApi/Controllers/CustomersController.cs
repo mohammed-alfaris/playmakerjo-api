@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -152,6 +153,74 @@ public class CustomersController : ControllerBase
                 Stats = stats[customer.Id],
             }
         });
+    }
+
+    /// <summary>
+    /// GET /api/v1/customers/export — the owner's own customer list, as CSV.
+    ///
+    /// This is deliberately ungated and always will be. These are HIS customers: he
+    /// collected every one of these numbers by taking bookings. In a market where venue
+    /// owners have been burned by platforms that took their customer list hostage,
+    /// a working export button is the cheapest credible proof that this one will not.
+    ///
+    /// Archived customers are included. Leaving someone out of an export because a flag
+    /// was flipped in our product would make the file quietly incomplete, which is worse
+    /// than not offering the export at all.
+    ///
+    /// The commercial argument for gating it is that it makes leaving easy. That is the
+    /// point: we charge for the analysis, not for holding his data.
+    /// </summary>
+    [HttpGet("export")]
+    public async Task<IActionResult> Export([FromQuery] string? owner_id = null)
+    {
+        var ownerId = ResolveOwnerId(owner_id);
+        if (ownerId == null) return Forbid();
+
+        var customers = await _db.Customers
+            .Where(c => c.OwnerId == ownerId)
+            .OrderBy(c => c.Name)
+            .ToListAsync();
+
+        var stats = await ComputeStatsAsync(customers.Select(c => c.Id).ToList());
+
+        var sb = new StringBuilder();
+        // BOM: without it Excel on Windows opens UTF-8 as cp1256 and every Arabic name in
+        // the file becomes mojibake — the export would technically work and be useless.
+        sb.Append('﻿');
+        sb.AppendLine("Name,Phone,Bookings,Attended,NoShows,LastVisit,AmountOwed,Status,Note");
+
+        foreach (var c in customers)
+        {
+            var s = stats[c.Id];
+            sb.AppendLine(string.Join(",",
+                Csv(c.Name),
+                Csv(c.Phone),
+                Csv(s.TotalBookings.ToString()),
+                Csv(s.Attended.ToString()),
+                Csv(s.NoShow.ToString()),
+                Csv(s.LastVisit ?? ""),
+                Csv(s.AmountOwed.ToString("0.###")),
+                Csv(c.Status),
+                Csv(c.Note)));
+        }
+
+        var stamp = PlatformConstants.JordanToday().ToString("yyyy-MM-dd");
+        return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", $"customers-{stamp}.csv");
+    }
+
+    /// <summary>
+    /// Quotes a CSV field and defuses formula injection.
+    ///
+    /// A customer note beginning "=" or "+" is executed as a formula the moment the file is
+    /// opened in Excel. The owner exports his own customers and runs whatever a customer
+    /// once typed into a name field. Same helper as ReportsController.
+    /// </summary>
+    private static string Csv(string? value)
+    {
+        var s = value ?? "";
+        if (s.Length > 0 && (s[0] is '=' or '+' or '-' or '@' or '\t' or '\r'))
+            s = "'" + s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
     }
 
     /// <summary>
