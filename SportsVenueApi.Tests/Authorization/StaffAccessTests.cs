@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using SportsVenueApi.Constants;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Bookings;
+using SportsVenueApi.DTOs.Customers;
 using SportsVenueApi.DTOs.Users;
 using SportsVenueApi.Tests.Infrastructure;
 
@@ -302,5 +303,90 @@ public class StaffAccessTests
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    // ----------------------------------------------- read staff must not rewrite the book
+    //
+    // Every mutating BOOKING route runs through VenueAccess.CanWrite, but that helper takes
+    // a Venue and customers are keyed on the owner, so the customer routes consulted the
+    // permission nowhere at all. A clerk explicitly set to "read" — whose own UI copy says
+    // "Cannot create or change anything" — could rename or archive every customer their
+    // employer had.
+
+    /// <summary>Takes a counter booking as write-staff, which is what creates a customer.</summary>
+    private async Task<string> CustomerViaCounter(string venueId, string startTime, string phone, string name)
+    {
+        var clerk = await _fx.CreateClientForUserAsync(_fx.StaffAWriteId);
+        var res = await clerk.PostAsJsonAsync("/api/v1/bookings", new
+        {
+            venueId,
+            sport = "basketball",
+            date = FutureDate,
+            startTime,
+            duration = 60,
+            paymentMethod = "cliq",
+            isManual = true,
+            customerPhone = phone,
+            customerName = name,
+        });
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var lookup = await clerk.GetAsync($"/api/v1/customers/lookup?phone={Uri.EscapeDataString(phone)}");
+        Assert.Equal(HttpStatusCode.OK, lookup.StatusCode);
+        var body = await lookup.Content.ReadFromJsonAsync<ApiResponse<CustomerLookupResponse>>();
+        Assert.NotNull(body!.Data);
+        return body.Data!.Id;
+    }
+
+    [Fact]
+    public async Task ReadStaff_CannotRenameACustomer()
+    {
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
+        var id = await CustomerViaCounter(venue.Id, "12:00", "0791100001", "Original Name");
+        var readClerk = await _fx.CreateClientForUserAsync(_fx.StaffAReadId);
+
+        var res = await readClerk.PatchAsJsonAsync($"/api/v1/customers/{id}", new { name = "Rewritten" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task ReadStaff_CannotArchiveACustomer()
+    {
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
+        var id = await CustomerViaCounter(venue.Id, "12:30", "0791100002", "Keep Me");
+        var readClerk = await _fx.CreateClientForUserAsync(_fx.StaffAReadId);
+
+        var res = await readClerk.PatchAsJsonAsync($"/api/v1/customers/{id}/archive", new { });
+
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task ReadStaff_CanStillLookACustomerUp()
+    {
+        // The gate is on writing, not on looking: a read clerk still has to be able to
+        // answer the phone and see who is calling.
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
+        await CustomerViaCounter(venue.Id, "13:00", "0791100003", "Visible");
+        var readClerk = await _fx.CreateClientForUserAsync(_fx.StaffAReadId);
+
+        var res = await readClerk.GetAsync("/api/v1/customers/lookup?phone=0791100003");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var body = await res.Content.ReadFromJsonAsync<ApiResponse<CustomerLookupResponse>>();
+        Assert.Equal("Visible", body!.Data!.Name);
+    }
+
+    [Fact]
+    public async Task WriteStaff_CanStillRenameACustomer()
+    {
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
+        var id = await CustomerViaCounter(venue.Id, "13:30", "0791100004", "Typo Nmae");
+        var writeClerk = await _fx.CreateClientForUserAsync(_fx.StaffAWriteId);
+
+        var res = await writeClerk.PatchAsJsonAsync($"/api/v1/customers/{id}", new { name = "Fixed Name" });
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
     }
 }

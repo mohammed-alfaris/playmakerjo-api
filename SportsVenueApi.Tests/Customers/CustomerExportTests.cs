@@ -57,6 +57,33 @@ public class CustomerExportTests
     }
 
     [Fact]
+    public async Task ThePhoneColumnIsNotMangledByTheFormulaGuard()
+    {
+        // Canonical numbers always begin "+962", and the anti-injection guard prefixed an
+        // apostrophe to anything starting with '+'. So EVERY row exported as '+962…
+        // Excel treats the apostrophe as a text marker and hides it, which is why this
+        // survived; Google Sheets, LibreOffice, pandas and any CRM re-import show it.
+        //
+        // The whole promise of this endpoint is that the owner can take his list and walk
+        // out. The one column that makes the list worth anything arrived corrupted
+        // everywhere except the single program that conceals the damage.
+        //
+        // Asserting on the parsed field, not Contains() on the whole document — the old
+        // assertion passed happily against '+962791234801.
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
+        await BookFor(venue.Id, "11:30", "0791234809", "Phone Column Check");
+
+        var csv = await BodyOf(await _fx.CreateClientFor(_fx.OwnerAId, "venue_owner")
+            .GetAsync("/api/v1/customers/export"));
+
+        var row = csv.Split('\n').First(l => l.Contains("Phone Column Check"));
+        var phoneField = row.Split(',')[1].Trim().Trim('"');
+
+        Assert.Equal("+962791234809", phoneField);
+        Assert.DoesNotContain("'", phoneField);
+    }
+
+    [Fact]
     public async Task TheExportOpensCorrectlyInExcel()
     {
         // Without a BOM, Excel on Windows reads UTF-8 as cp1256 and every Arabic name

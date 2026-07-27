@@ -30,6 +30,7 @@ public class CustomersController : ControllerBase
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
     private string? StaffOwnerId => User.FindFirstValue("owner_id");
+    private string? StaffPermissions => User.FindFirstValue("permissions");
 
     /// <summary>
     /// Whose book is this? Owners get their own, staff get their employer's, and everyone
@@ -44,6 +45,20 @@ public class CustomersController : ControllerBase
         "venue_staff" => string.IsNullOrEmpty(StaffOwnerId) ? null : StaffOwnerId,
         _ => null,
     };
+
+    /// <summary>
+    /// May the caller change the book, as opposed to read it? <c>ResolveOwnerId</c>
+    /// settles WHOSE book; this settles whether they may write to it.
+    ///
+    /// Every mutating booking route goes through <c>VenueAccess.CanWrite</c>, but that
+    /// helper takes a Venue and customers are keyed on the owner, so nothing here
+    /// consulted the permission at all — a clerk explicitly set to "read", whose own
+    /// UI copy reads "Cannot create or change anything", could rename or archive every
+    /// customer their employer had. Fails closed: a staff row with no permissions claim
+    /// gets no write.
+    /// </summary>
+    private bool CanWriteCustomers =>
+        UserRole != "venue_staff" || StaffPermissions == "write";
 
     /// <summary>A booking reduced to just what the stats need.</summary>
     private sealed record BookingFact(
@@ -194,7 +209,7 @@ public class CustomersController : ControllerBase
             var s = stats[c.Id];
             sb.AppendLine(string.Join(",",
                 Csv(c.Name),
-                Csv(c.Phone),
+                CsvPhone(c.Phone),
                 Csv(s.TotalBookings.ToString()),
                 Csv(s.Attended.ToString()),
                 Csv(s.NoShow.ToString()),
@@ -221,6 +236,28 @@ public class CustomersController : ControllerBase
         if (s.Length > 0 && (s[0] is '=' or '+' or '-' or '@' or '\t' or '\r'))
             s = "'" + s;
         return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+
+    /// <summary>
+    /// The phone column, which the generic guard above quietly ruined.
+    ///
+    /// Canonical numbers always begin "+962", so every single row was exported as
+    /// <c>'+962791234567</c>. Excel treats the leading apostrophe as a text marker and
+    /// hides it; Google Sheets, LibreOffice, pandas and any CRM re-import show it
+    /// literally. The whole point of this endpoint is that the owner can take his list
+    /// and walk out, and the one column that matters arrived broken everywhere except
+    /// the single program that hides the damage.
+    ///
+    /// A value that survives <c>PhoneNormalizer</c> is digits and a leading '+' — it
+    /// cannot carry a formula. Anything else (legacy junk, a mistyped row) still goes
+    /// through the strict guard.
+    /// </summary>
+    private static string CsvPhone(string? value)
+    {
+        var s = value ?? "";
+        return PhoneNormalizer.IsJordanianMobile(s)
+            ? "\"" + s.Replace("\"", "\"\"") + "\""
+            : Csv(s);
     }
 
     /// <summary>
@@ -483,6 +520,7 @@ public class CustomersController : ControllerBase
 
         var ownerId = ResolveOwnerId(customer.OwnerId);
         if (ownerId == null || ownerId != customer.OwnerId) return Forbid();
+        if (!CanWriteCustomers) return Forbid();
 
         if (req.Name != null)
         {
@@ -518,6 +556,7 @@ public class CustomersController : ControllerBase
 
         var ownerId = ResolveOwnerId(customer.OwnerId);
         if (ownerId == null || ownerId != customer.OwnerId) return Forbid();
+        if (!CanWriteCustomers) return Forbid();
 
         customer.Status = "archived";
         customer.ArchivedAt = DateTime.UtcNow;
