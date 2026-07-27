@@ -35,6 +35,15 @@ public class CustomerStats
     [JsonPropertyName("noShow")]
     public int NoShow { get; set; }
 
+    /// <summary>
+    /// Raw <c>status == "completed"</c> count — distinct from <see cref="Attended"/>, which
+    /// also counts a past "confirmed" booking nobody flagged either way. The detail page's
+    /// status cards show the four literal booking states as they actually are; the
+    /// presence-assumed heuristic belongs to the segment logic, not here.
+    /// </summary>
+    [JsonPropertyName("completed")]
+    public int Completed { get; set; }
+
     [JsonPropertyName("cancelled")]
     public int Cancelled { get; set; }
 
@@ -164,6 +173,10 @@ public class CustomerBookingItem
 
     [JsonPropertyName("isManual")]
     public bool IsManual { get; set; }
+
+    /// <summary>Free text from the booking — "always 15 minutes late", a walk-in note, etc.</summary>
+    [JsonPropertyName("notes")]
+    public string? Notes { get; set; }
 }
 
 public class CustomerDetailResponse : CustomerResponse

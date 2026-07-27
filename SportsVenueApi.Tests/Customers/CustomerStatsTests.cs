@@ -206,6 +206,22 @@ public class CustomerStatsTests
         Assert.Equal(0, stats.AmountOwed, 3);
     }
 
+    [Fact]
+    public async Task Completed_IsTheRawStatusNotThePresenceHeuristic()
+    {
+        // Attended assumes presence for an un-flagged past "confirmed" row; Completed does
+        // not — it is the literal status count the detail page's card shows, and the two
+        // must be allowed to disagree.
+        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
+        var customer = await NewCustomer(_fx.OwnerAId);
+        await Seed(venue.Id, customer.Id, daysAgo: 5, "completed");
+        await Seed(venue.Id, customer.Id, daysAgo: 3, "confirmed"); // past, never tapped complete
+
+        var stats = await StatsFor(customer.Id);
+        Assert.Equal(2, stats.Attended);
+        Assert.Equal(1, stats.Completed);
+    }
+
     // --------------------------------------------------------------------- channel
 
     [Fact]

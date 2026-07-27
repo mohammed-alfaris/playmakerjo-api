@@ -93,6 +93,7 @@ public class CustomersController : ControllerBase
             s.TotalBookings = live.Count;
             s.Cancelled = rows.Count(r => r.Status == "cancelled");
             s.NoShow = rows.Count(r => r.Status == "no_show");
+            s.Completed = rows.Count(r => r.Status == "completed");
 
             // Presence assumed, absence declared — see CustomerStats.Attended.
             bool Attended(BookingFact r) => r.Status == "completed" || (r.Status == "confirmed" && r.Date.Date < today);
@@ -503,6 +504,7 @@ public class CustomersController : ControllerBase
                 TotalAmount = b.TotalAmount,
                 AmountPaid = b.AmountPaid,
                 IsManual = b.IsManual,
+                Notes = b.Notes,
             })
             .ToListAsync();
 
@@ -520,6 +522,58 @@ public class CustomersController : ControllerBase
                 Stats = dto.Stats,
                 RecentBookings = bookings,
             }
+        });
+    }
+
+    /// <summary>
+    /// GET /api/v1/customers/{id}/bookings — the full history, paginated. What the detail
+    /// page's table reads; <see cref="Get"/>'s <c>recentBookings</c> stays capped at 50 for
+    /// callers that just want a quick preview.
+    /// </summary>
+    [HttpGet("{id}/bookings")]
+    public async Task<IActionResult> Bookings(
+        string id,
+        [FromQuery] int page = 1,
+        [FromQuery] int limit = 20,
+        [FromQuery] string? status = null)
+    {
+        var customer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == id);
+        if (customer == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Customer not found" });
+
+        var ownerId = ResolveOwnerId(customer.OwnerId);
+        if (ownerId == null || ownerId != customer.OwnerId) return Forbid();
+        if (limit is < 1 or > 100) limit = 20;
+
+        var query = _db.Bookings.Where(b => b.CustomerId == customer.Id);
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(b => b.Status == status);
+
+        var total = await query.CountAsync();
+        var bookings = await query
+            .Include(b => b.Venue)
+            .OrderByDescending(b => b.Date).ThenByDescending(b => b.StartTime)
+            .Skip((page - 1) * limit)
+            .Take(limit)
+            .Select(b => new CustomerBookingItem
+            {
+                Id = b.Id,
+                VenueName = b.Venue.Name,
+                Sport = b.Sport,
+                Date = b.Date.ToString("yyyy-MM-dd"),
+                StartTime = b.StartTime,
+                Status = b.Status,
+                TotalAmount = b.TotalAmount,
+                AmountPaid = b.AmountPaid,
+                IsManual = b.IsManual,
+                Notes = b.Notes,
+            })
+            .ToListAsync();
+
+        return Ok(new ApiResponse<List<CustomerBookingItem>>
+        {
+            Data = bookings,
+            Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total },
         });
     }
 
