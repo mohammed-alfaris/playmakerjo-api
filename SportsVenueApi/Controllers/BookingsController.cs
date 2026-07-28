@@ -874,6 +874,20 @@ public class BookingsController : ControllerBase
             if (booking.Status != "confirmed") continue;
             if (booking.Date.Date >= today) continue;
 
+            // Presence only. This deliberately does NOT settle the balance, unlike the
+            // single-booking Complete, and the asymmetry is the point.
+            //
+            // "Everyone came" is one tap answering one question: did these people turn up?
+            // Making it also assert that every one of them paid would fabricate payments
+            // that never happened — and they would land in an append-only ledger that
+            // cannot be corrected. An owner clearing a week of attendance in one tap has
+            // not counted anyone's money.
+            //
+            // What used to make this a trap was the dead end afterwards: Complete refuses a
+            // non-confirmed booking, so a bulk-confirmed row could never be settled through
+            // any screen and the customer read as owing forever. MarkPaid accepts anything
+            // that is not cancelled, and the dashboard now offers it on completed bookings
+            // that still owe, so the balance stays clearable.
             booking.Status = "completed";
             updated++;
         }
