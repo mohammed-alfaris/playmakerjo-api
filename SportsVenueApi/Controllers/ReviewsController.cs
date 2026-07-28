@@ -241,4 +241,33 @@ public class ReviewsController : ControllerBase
 
         return Ok(new ApiResponse<object> { Data = null, Message = "Review hidden" });
     }
+
+    /// <summary>
+    /// Admin: restore a hidden review.
+    ///
+    /// Hiding was one-way, and it is not only a moderation action: the venue's public
+    /// average filters on <c>!r.Hidden</c> (VenuesController.StampAggregatesAsync), so
+    /// hiding permanently removed a rating from a venue's score. One misclick on a genuine
+    /// five-star review silently and irreversibly lowered that venue's rating, with the row
+    /// still sitting visible in the admin list and no button on it.
+    ///
+    /// Any destructive action an operator can reach in one click needs its inverse.
+    /// </summary>
+    [Authorize(Roles = "super_admin")]
+    [HttpPatch("{id}/restore")]
+    public async Task<IActionResult> AdminRestore(string id)
+    {
+        var review = await _db.Reviews.FirstOrDefaultAsync(r => r.Id == id);
+        if (review == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Review not found" });
+
+        if (!review.Hidden)
+            return Ok(new ApiResponse<object> { Data = null, Message = "Review is already visible" });
+
+        review.Hidden = false;
+        review.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<object> { Data = null, Message = "Review restored" });
+    }
 }

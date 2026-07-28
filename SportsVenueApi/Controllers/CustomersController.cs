@@ -69,6 +69,22 @@ public class CustomersController : ControllerBase
     /// Computes stats for a set of customers in one pass. Called with a single page of
     /// customers (20), so this is one query over an index, not an N+1.
     /// </summary>
+    /// <summary>
+    /// "Stopped coming": came at least twice, then went quiet for over a month.
+    ///
+    /// One rule, one place. It was written twice and the two copies disagreed — the segment
+    /// list counted every non-cancelled booking, so a no-show or a booking still on the
+    /// calendar made someone "lapsed", while the win-back report counted only visits
+    /// actually attended. A customer with one visit 60 days ago and a booking next Tuesday
+    /// appeared in the list as lost and not in the report, so the owner saw a count on one
+    /// screen and a different-length list on the other.
+    ///
+    /// Attended visits is the correct input: a person who never turned up was not a regular,
+    /// and a person with a booking on the calendar has not gone quiet.
+    /// </summary>
+    private static bool IsLapsedRule(int attendedVisits, int? daysSinceLastVisit) =>
+        attendedVisits >= 2 && daysSinceLastVisit is > 30;
+
     private async Task<Dictionary<string, CustomerStats>> ComputeStatsAsync(List<string> customerIds)
     {
         var result = customerIds.ToDictionary(id => id, _ => new CustomerStats());
@@ -136,7 +152,7 @@ public class CustomersController : ControllerBase
             s.NoShowRate = judged == 0 ? 0 : Math.Round(s.NoShow * 100.0 / judged, 1);
 
             s.IsRegular = live.Count(r => r.Date.Date >= ninetyDaysAgo) >= 4;
-            s.IsLapsed = s.TotalBookings >= 2 && s.DaysSinceLastVisit is > 30;
+            s.IsLapsed = IsLapsedRule(s.Attended, s.DaysSinceLastVisit);
             s.IsNew = s.TotalBookings <= 1;
             s.IsUnreliable = s.NoShow >= 2 || s.NoShowRate > 25;
         }
@@ -416,7 +432,7 @@ public class CustomersController : ControllerBase
             // The win-back list. Same rule as the "stopped coming" segment: came at least
             // twice, then went quiet for over a month. A one-off visitor is not a lost
             // regular and chasing them wastes the owner's time.
-            if (c.Status == "active" && lifetimeVisits >= 2 && daysSince is > 30)
+            if (c.Status == "active" && IsLapsedRule(lifetimeVisits, daysSince))
                 lapsed.Add(item);
         }
 
