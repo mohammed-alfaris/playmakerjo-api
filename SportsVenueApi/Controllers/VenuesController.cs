@@ -794,8 +794,9 @@ public class VenuesController : ControllerBase
                 Duration = b.Duration,
                 Sport = b.Sport,
                 PitchId = b.PitchId,
-                // Resolved from the pitch: `parent` is the venue's FOOTBALL size, so handing
-                // it to a padel booking both mislabelled it and made it weigh 4 units, not 1.
+                // Resolved from the pitch: `parent` is the venue's FOOTBALL size, so handing it
+                // to a padel booking both mislabelled it and overweighted it — 2 units for a
+                // "7" venue, 4 for an "11" one, against a real cost of 1.
                 PitchSize = b.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, b.PitchId),
                 UnitWeight = PitchSizes.WeightOf(b.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, b.PitchId))
             })

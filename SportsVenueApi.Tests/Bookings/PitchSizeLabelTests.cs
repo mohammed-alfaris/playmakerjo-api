@@ -19,8 +19,8 @@ namespace SportsVenueApi.Tests.Bookings;
 /// football size and the timeline drew "7v7" on the padel court.
 ///
 /// The same expression also feeds <see cref="SportsVenueApi.Constants.PitchSizes.WeightOf"/>
-/// on the availability route, where "7" is not merely a wrong label — it is four capacity
-/// units instead of one.
+/// on the availability route, where the borrowed size is not merely a wrong label — it is
+/// 2 capacity units for a "7" venue (4 for an "11" one) against a real cost of 1.
 /// </summary>
 [Collection("Api")]
 public class PitchSizeLabelTests
@@ -134,10 +134,11 @@ public class PitchSizeLabelTests
     }
 
     [Fact]
-    public async Task APadelBookingWeighsOneUnitNotFour()
+    public async Task APadelBookingWeighsOneUnitNotTwo()
     {
-        // The consequence that is not cosmetic. WeightOf("7") is 4, so before the fix a
-        // single padel booking consumed four capacity units on the availability route.
+        // The consequence that is not cosmetic. WeightOf("7") is 2 (UnitWeight, PitchSizes.cs:27),
+        // so before the fix a single padel booking ate two capacity units instead of one — and
+        // four on a venue whose ParentSize is "11".
         var (venue, _, padelId) = await MixedVenue();
         await Book(venue.Id, padelId, "padel", "16:00");
 
