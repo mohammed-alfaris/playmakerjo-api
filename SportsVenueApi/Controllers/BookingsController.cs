@@ -84,64 +84,11 @@ public class BookingsController : ControllerBase
         || (UserRole == "player" && booking.PlayerId == UserId);
 
     /// <summary>
-    /// Find-or-create the customer for a walk-in, keyed on (owner, normalised phone).
-    ///
-    /// Returns null — meaning "no customer recorded" — when no usable phone was given. That
-    /// is deliberate: the phone is the identity, and a nameless row with no number would be
-    /// an un-deduplicable ghost that pollutes the book forever. A booking without a phone is
-    /// still a perfectly good booking.
-    ///
-    /// A stored name is never overwritten by a later booking: the owner may have corrected
-    /// the spelling in the customer sheet, and a hurried re-type at the counter must not
-    /// undo that. An empty stored name is filled in when one finally arrives.
+    /// Find-or-create the venue's customer for a walk-in. The rule itself lives in
+    /// Helpers/CustomerResolver so standing weekly reservations use the same one.
     /// </summary>
-    private async Task<string?> ResolveCustomerAsync(string ownerId, string? rawPhone, string? rawName)
-    {
-        var phone = PhoneNormalizer.ToE164Jo(rawPhone);
-        if (phone == null) return null;
-
-        var name = rawName?.Trim() ?? "";
-        if (name.Length > 120) name = name[..120];
-
-        var existing = await _db.Customers
-            .FirstOrDefaultAsync(c => c.OwnerId == ownerId && c.Phone == phone);
-
-        if (existing != null)
-        {
-            if (string.IsNullOrWhiteSpace(existing.Name) && name.Length > 0)
-            {
-                existing.Name = name;
-                existing.UpdatedAt = DateTime.UtcNow;
-                await _db.SaveChangesAsync();
-            }
-            return existing.Id;
-        }
-
-        var customer = new Customer
-        {
-            OwnerId = ownerId,
-            Phone = phone,
-            Name = name,
-            CreatedByUserId = UserId,
-        };
-        _db.Customers.Add(customer);
-
-        try
-        {
-            await _db.SaveChangesAsync();
-            return customer.Id;
-        }
-        catch (DbUpdateException)
-        {
-            // Two clerks taking the same person's booking at the same moment both miss the
-            // read and both insert; the unique index rejects one. Re-read rather than fail
-            // the booking — the customer exists either way, which is all we needed.
-            _db.Entry(customer).State = EntityState.Detached;
-            var raced = await _db.Customers
-                .FirstOrDefaultAsync(c => c.OwnerId == ownerId && c.Phone == phone);
-            return raced?.Id;
-        }
-    }
+    private Task<string?> ResolveCustomerAsync(string ownerId, string? rawPhone, string? rawName) =>
+        CustomerResolver.ResolveAsync(_db, ownerId, rawPhone, rawName, UserId);
 
     // GET /api/v1/bookings — admin/owner list (existing, for dashboard)
     [HttpGet]

@@ -52,7 +52,7 @@ public class PermanentBookingsController : ControllerBase
         if (!CanViewVenue(venue))
             return Forbid();
 
-        var q = _db.PermanentBookings.Where(p => p.VenueId == venueId);
+        var q = _db.PermanentBookings.Include(p => p.Customer).Where(p => p.VenueId == venueId);
         if (!string.IsNullOrEmpty(status))
             q = q.Where(p => p.Status == status);
 
@@ -146,6 +146,12 @@ public class PermanentBookingsController : ControllerBase
             LabelAr = string.IsNullOrWhiteSpace(req.LabelAr) ? null : req.LabelAr.Trim(),
             Status = "active",
             CreatedByUserId = UserId,
+            // The organiser of a standing group. Roughly 40% of a pitch's bookings are these
+            // weekly regulars, and until now not one of them existed in the customer book —
+            // the owner's most valuable relationships were the only ones he had no record of.
+            // Optional, exactly like a walk-in: a missing phone must never block the booking.
+            CustomerId = await CustomerResolver.ResolveAsync(
+                _db, venue.OwnerId, req.CustomerPhone, req.CustomerName, UserId),
         };
         _db.PermanentBookings.Add(perm);
         await _db.SaveChangesAsync();
@@ -163,6 +169,7 @@ public class PermanentBookingsController : ControllerBase
     {
         var perm = await _db.PermanentBookings
             .Include(p => p.Venue)
+            .Include(p => p.Customer)
             .FirstOrDefaultAsync(p => p.Id == id);
         if (perm == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Permanent booking not found" });
@@ -371,6 +378,10 @@ public class PermanentBookingsController : ControllerBase
         Duration = p.Duration,
         Label = p.Label,
         LabelAr = p.LabelAr,
+        Customer = p.Customer == null ? null : new PermanentCustomerRef
+        {
+            Id = p.Customer.Id, Name = p.Customer.Name, Phone = p.Customer.Phone,
+        },
         Status = p.Status,
         CreatedByUserId = p.CreatedByUserId,
         CreatedAt = p.CreatedAt,

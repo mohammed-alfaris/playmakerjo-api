@@ -80,6 +80,15 @@ public class AppDbContext : DbContext
             // Look-up index for the availability merge: (venue, weekday, status).
             e.HasIndex(p => new { p.VenueId, p.DayOfWeek, p.Status });
             e.HasIndex(p => p.CustomerId);
+
+            // SetNull, matching bookings: a standing reservation must survive its customer
+            // row being removed. The slot is still blocked every week either way, and
+            // losing the reservation because a name was tidied up would free a pitch that
+            // somebody is going to turn up to.
+            e.HasOne(p => p.Customer)
+             .WithMany()
+             .HasForeignKey(p => p.CustomerId)
+             .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<Customer>(e =>

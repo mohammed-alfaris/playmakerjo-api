@@ -76,4 +76,11 @@ public class PermanentBooking
 
     [ForeignKey("VenueId")]
     public Venue Venue { get; set; } = null!;
+
+    /// <summary>
+    /// The organiser. The column and its index existed from the start and nothing ever set
+    /// or read them — there was no navigation property, so no query could even load one.
+    /// </summary>
+    [ForeignKey("CustomerId")]
+    public Customer? Customer { get; set; }
 }
