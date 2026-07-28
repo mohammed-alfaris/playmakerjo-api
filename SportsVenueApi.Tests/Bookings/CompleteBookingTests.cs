@@ -11,12 +11,19 @@ namespace SportsVenueApi.Tests.Bookings;
 /// <summary>
 /// PATCH /api/v1/bookings/{id}/complete — the single explicit "mark completed" action, as
 /// opposed to the bulk attendance-confirm sweep (AttendanceReviewTests), which has its own
-/// independent logic and is not covered by this rule.
+/// independent logic and is not covered by these rules.
 ///
-/// "Completed" must mean the visit is settled, not just that it happened. Completed always
-/// counts as attended, and CustomersController's owing figure only looks at attended
-/// bookings — so letting an underpaid booking through here is how a genuine debt stops being
-/// visible as one at all.
+/// Completing is ONE act at the counter: he played and he paid. So this endpoint collects any
+/// outstanding balance itself rather than refusing until someone settles it separately.
+///
+/// That coupling is load-bearing. Completed always counts as attended, and the owing figure in
+/// CustomersController only looks at attended bookings — so a completion that left a balance
+/// behind would make a real debt silently invisible. The customer who played and did NOT pay is
+/// represented by the absence of this call: the booking stays confirmed, the date passes, and the
+/// derived attended rule reports it as owed.
+///
+/// For money WITHOUT completion (an upcoming slot prepaid, or a pending_payment booking settled
+/// at the counter) the endpoint is mark-paid — see PaymentLedgerTests.
 /// </summary>
 [Collection("Api")]
 public class CompleteBookingTests
@@ -30,7 +37,8 @@ public class CompleteBookingTests
     /// SUM(payments)==amount_paid), and any invariant assertion made from there would be measuring
     /// the fixture rather than the code.
     /// </summary>
-    private async Task<Booking> SeedConfirmed(string venueId, double total, double paid)
+    private async Task<Booking> SeedConfirmed(
+        string venueId, double total, double paid, DateTime? deadline = null)
     {
         var booking = await _fx.Insert(new Booking
         {
@@ -44,6 +52,12 @@ public class CompleteBookingTests
             TotalAmount = total,
             AmountPaid = paid,
             Status = "confirmed",
+            // A counter booking, which is the case that actually carries a balance to the day.
+            // It also decides what PaymentLedger records as the method: with no PaymentMethod
+            // on the row, IsManual resolves it to "cash", which is what changing hands at the
+            // counter really is.
+            IsManual = true,
+            PaymentDeadlineAt = deadline,
         });
 
         if (paid > 0)
@@ -151,89 +165,20 @@ public class CompleteBookingTests
         Assert.Equal(5, (await _fx.LoadBooking(theirs.Id))!.AmountPaid, 3);
     }
 
-    // -------------------------------------------------------- settle-balance
-
     [Fact]
-    public async Task SettleBalance_ClosesTheGapToZero_ThenCompleteSucceeds()
+    public async Task Completing_DisarmsThePaymentDeadline()
     {
-        // The whole point: Complete's new rule is only fair if there is a way to make a
-        // booking fully paid. This is that way.
+        // Cancel disarms for a stated reason: a live deadline on a terminal row lets the sweep
+        // stamp AutoCancelledAt on it later and rewrite whose decision it was. "Completed" is
+        // exactly as terminal as "cancelled". UnpaidBookingSweep only reads pending_payment
+        // today, so this is defence in depth — but the two terminal paths must not disagree.
         var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
-        var booking = await SeedConfirmed(venue.Id, total: 25, paid: 5);
+        var booking = await SeedConfirmed(
+            venue.Id, total: 25, paid: 5, deadline: DateTime.UtcNow.AddHours(2));
 
         var client = _fx.CreateClientFor(_fx.OwnerAId, "venue_owner");
-        var settle = await client.PatchAsync($"/api/v1/bookings/{booking.Id}/settle-balance", null);
-        Assert.Equal(HttpStatusCode.OK, settle.StatusCode);
-        Assert.Equal(25, (await _fx.LoadBooking(booking.Id))!.AmountPaid, 3);
+        await client.PatchAsync($"/api/v1/bookings/{booking.Id}/complete", null);
 
-        var complete = await client.PatchAsync($"/api/v1/bookings/{booking.Id}/complete", null);
-        Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
-    }
-
-    [Fact]
-    public async Task SettleBalance_WritesAMatchingLedgerRow()
-    {
-        // The ledger's invariant (PaymentLedgerTests): sum(payments.amount) == amount_paid.
-        // A settle that updated the field without writing the row would violate it silently.
-        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
-        var booking = await SeedConfirmed(venue.Id, total: 25, paid: 5);
-
-        var client = _fx.CreateClientFor(_fx.OwnerAId, "venue_owner");
-        await client.PatchAsync($"/api/v1/bookings/{booking.Id}/settle-balance", null);
-
-        var payments = await _fx.LoadPayments(booking.Id);
-        var row = await _fx.LoadBooking(booking.Id);
-        Assert.Equal(2, payments.Count);            // 5 deposit + 20 balance
-        Assert.Equal(20, payments.Last().Amount, 3);
-        Assert.Equal("cash", payments.Last().Method);
-        Assert.Equal(row!.AmountPaid, payments.Sum(p => p.Amount), 3);
-    }
-
-    [Fact]
-    public async Task SettleBalance_Rejected_WhenAlreadyFullyPaid()
-    {
-        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
-        var booking = await SeedConfirmed(venue.Id, total: 25, paid: 25);
-
-        var client = _fx.CreateClientFor(_fx.OwnerAId, "venue_owner");
-        var res = await client.PatchAsync($"/api/v1/bookings/{booking.Id}/settle-balance", null);
-
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-    }
-
-    [Fact]
-    public async Task SettleBalance_Rejected_OnACancelledBooking()
-    {
-        var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId);
-        var booking = await _fx.Insert(new Booking
-        {
-            VenueId = venue.Id,
-            PlayerId = _fx.PlayerId,
-            Sport = "basketball",
-            Date = PlatformConstants.JordanToday().AddDays(-1),
-            StartTime = "10:00",
-            Duration = 60,
-            Amount = 25,
-            TotalAmount = 25,
-            AmountPaid = 5,
-            Status = "cancelled",
-        });
-
-        var client = _fx.CreateClientFor(_fx.OwnerAId, "venue_owner");
-        var res = await client.PatchAsync($"/api/v1/bookings/{booking.Id}/settle-balance", null);
-
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-    }
-
-    [Fact]
-    public async Task SettleBalance_ACompetitorsBooking_CannotBeTouched()
-    {
-        var venueB = await _fx.CreateBasketballVenue(_fx.OwnerBId);
-        var theirs = await SeedConfirmed(venueB.Id, total: 25, paid: 5);
-
-        var client = _fx.CreateClientFor(_fx.OwnerAId, "venue_owner");
-        var res = await client.PatchAsync($"/api/v1/bookings/{theirs.Id}/settle-balance", null);
-
-        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+        Assert.Null((await _fx.LoadBooking(booking.Id))!.PaymentDeadlineAt);
     }
 }

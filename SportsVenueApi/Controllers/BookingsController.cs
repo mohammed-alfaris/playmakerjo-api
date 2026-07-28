@@ -687,54 +687,6 @@ public class BookingsController : ControllerBase
         });
     }
 
-    /// <summary>
-    /// PATCH /api/v1/bookings/{id}/settle-balance — record that the outstanding amount was
-    /// collected, in person, right now.
-    ///
-    /// The counterpart to Complete's new full-payment requirement: that check can only ever
-    /// be correct if there is also a way to make a booking fully paid. Always settles to the
-    /// FULL remaining balance — a running total that stopped short of the total would leave
-    /// the booking permanently uncompletable with no way to see why, since the UI does not
-    /// expose a partial-amount input. If a genuinely partial top-up is ever needed, that is
-    /// a different, explicit action; this one always closes the gap to zero.
-    /// </summary>
-    [HttpPatch("{id}/settle-balance")]
-    public async Task<IActionResult> SettleBalance(string id)
-    {
-        var booking = await _db.Bookings
-            .Include(b => b.Venue)
-            .Include(b => b.Player)
-            .Include(b => b.Customer)
-            .AsSplitQuery()
-            .FirstOrDefaultAsync(b => b.Id == id);
-
-        if (booking == null)
-            return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
-
-        if (!CanManageBooking(booking))
-            return Forbid();
-
-        if (booking.Status == "cancelled")
-            return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot record payment on a cancelled booking" });
-
-        var remaining = Math.Round(booking.TotalAmount - booking.AmountPaid, 3);
-        if (remaining <= PaymentLedger.Epsilon)
-            return BadRequest(new ApiResponse<object> { Success = false, Message = "Already fully paid" });
-
-        // Money handed over at the counter, right now, is cash by definition — there is no
-        // card reader or CliQ proof involved in "recording that it was collected".
-        var receipt = PaymentLedger.Settle(
-            booking, booking.TotalAmount, "balance", UserId, "Collected at the venue", "cash");
-        if (receipt != null) _db.Payments.Add(receipt);
-        await _db.SaveChangesAsync();
-
-        return Ok(new ApiResponse<BookingResponse>
-        {
-            Data = ToDto(booking),
-            Message = "Payment recorded",
-        });
-    }
-
     // PATCH /api/v1/bookings/{id}/complete — mark a confirmed booking as completed
     [HttpPatch("{id}/complete")]
     public async Task<IActionResult> Complete(string id)
@@ -765,14 +717,23 @@ public class BookingsController : ControllerBase
         // owner marked the visit done. The customer who played and did NOT pay is represented
         // by simply not completing the booking: it stays confirmed, the date passes, and the
         // derived "attended" rule picks it up as owed. Absence of this tap IS the debt.
+        //
+        // For collecting money WITHOUT completing — an upcoming slot paid in advance, or a
+        // pending_payment booking settled at the counter — use mark-paid instead. This does
+        // not replace it; it just means the common case is one tap rather than two.
         var remaining = Math.Round(booking.TotalAmount - booking.AmountPaid, 3);
         var receipt = remaining > PaymentLedger.Epsilon
             ? PaymentLedger.Settle(
-                booking, booking.TotalAmount, "balance", UserId, "Collected on completion", "cash")
+                booking, booking.TotalAmount, "balance", UserId, "Collected on completion")
             : null;
         if (receipt != null) _db.Payments.Add(receipt);
 
         booking.Status = "completed";
+        // Disarm, for the same reason Cancel does: a live deadline on a terminal row is a
+        // trap for the expiry sweep. It only looks at pending_payment today, so this is
+        // defence in depth rather than a live bug — but "completed" is exactly as terminal
+        // as "cancelled", and the two should not disagree about their own invariant.
+        booking.PaymentDeadlineAt = null;
         // One SaveChanges: the status and its matching ledger row commit together or not at
         // all. Splitting them is how a booking ends up completed with the money unrecorded.
         await _db.SaveChangesAsync();
