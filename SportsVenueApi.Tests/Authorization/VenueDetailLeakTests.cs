@@ -153,8 +153,22 @@ public class VenueDetailLeakTests
         return (await res.Content.ReadFromJsonAsync<ApiResponse<BookingResponse>>())!.Data;
     }
 
+    /// <summary>
+    /// DELIBERATE REVERSAL of an earlier assertion in this file, which required a player's
+    /// own booking to carry no alias. That was too strict and it caused GAP-01: the player
+    /// is the person being asked to send a CliQ transfer, so denying them the alias left the
+    /// app rendering its placeholder string where the payment target belongs. Nobody could
+    /// pay, and the unpaid-booking sweep then cancelled bookings that were never payable.
+    ///
+    /// The leak this file exists to prevent is BULK harvesting: enumerate venue ids from the
+    /// anonymous list, read every alias, no account needed. That path is still shut and is
+    /// pinned by the tests above and by
+    /// <see cref="ARivalOwnerCannotHarvestTheAliasByBookingTheVenue"/>. Learning one venue's
+    /// alias by making a real booking you are then expected to pay for is not a leak — it is
+    /// the transaction working.
+    /// </summary>
     [Fact]
-    public async Task APlayersOwnBookingDoesNotCarryTheVenuesAlias()
+    public async Task APlayersOwnBookingDoesCarryTheAliasTheyMustPayTo()
     {
         var venue = await _fx.CreateBasketballVenue(_fx.OwnerAId, v => v.CliqAlias = "booking-leak@cliq");
         var player = await _fx.CreatePlayer();
@@ -163,7 +177,7 @@ public class VenueDetailLeakTests
         var booking = await Book(client, venue.Id, "09:00");
 
         Assert.NotNull(booking);
-        Assert.Null(booking!.Venue.CliqAlias);
+        Assert.Equal("booking-leak@cliq", booking!.Venue.CliqAlias);
     }
 
     [Fact]

@@ -224,7 +224,12 @@ public class AuthController : ControllerBase
                     Email = user.Email,
                     Role = user.Role,
                     Phone = user.Phone,
-                    Avatar = UploadUrlHelper.Normalize(user.Avatar, _uploadsBaseUrl)
+                    Avatar = UploadUrlHelper.Normalize(user.Avatar, _uploadsBaseUrl),
+                    // Only ever meaningful for staff. Emitting it for an owner would
+                    // invite a client to start reading permissions on roles where the
+                    // column is not maintained.
+                    Permissions = user.Role == "venue_staff" ? (user.Permissions ?? "read") : null,
+                    ManagedByOwnerId = user.Role == "venue_staff" ? user.ManagedByOwnerId : null
                 },
                 AccessToken = accessToken
             },

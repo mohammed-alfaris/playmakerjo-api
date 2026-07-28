@@ -1522,6 +1522,26 @@ public class BookingsController : ControllerBase
         var isBackOffice = b.Venue != null
             && VenueAccess.CanView(b.Venue, UserId, UserRole, StaffOwnerId);
 
+        // The player on THIS booking. Not a role — a relationship to one row.
+        //
+        // Closing the alias leak went one step too far: it removed the value from
+        // everyone outside the back office, including the one person being asked to
+        // transfer money. The app rendered its placeholder string where the alias
+        // should be, so the booking could never be paid and the expiry sweep
+        // eventually cancelled it. A security fix that silently breaks the payment
+        // funnel is a worse outage than the leak it closed.
+        //
+        // Deliberately NOT done by widening VenueAccess.CanView: that helper decides
+        // back-office access in a dozen places, and a player must not gain any of
+        // them. This grants exactly one venue's alias to someone already holding a
+        // booking there — the person who needs it, and no wider.
+        // The ROLE check is load-bearing, not decoration. Without it a rival venue_owner
+        // books a slot at a competitor's pitch and reads the alias straight off their own
+        // booking — a harvest that costs one booking per victim. Restricting to players
+        // means an attacker must hold a player account and make a real, payable booking to
+        // learn one venue's alias, which is indistinguishable from being a customer.
+        var isBookingOwner = UserRole == "player" && b.PlayerId == UserId;
+
         var dto = new BookingResponse
         {
             Id = b.Id,
@@ -1537,7 +1557,11 @@ public class BookingsController : ControllerBase
                 // stayed harvestable: POST a booking against any venue id, read it
                 // off the 201, cancel. Venue ids come from the anonymous public list,
                 // so a free account could sweep the whole platform.
-                CliqAlias = isBackOffice ? b.Venue.CliqAlias : null
+                //
+                // That sweep is still blocked — but the player who booked now gets it,
+                // because they cannot pay without it. Harvesting one alias by making a
+                // real booking you must then pay for is not a leak; it is a customer.
+                CliqAlias = (isBackOffice || isBookingOwner) ? b.Venue.CliqAlias : null
             },
             Player = new PlayerRef { Id = b.Player.Id, Name = b.Player.Name },
             // The customer book belongs to the venue, not to whoever is holding the
