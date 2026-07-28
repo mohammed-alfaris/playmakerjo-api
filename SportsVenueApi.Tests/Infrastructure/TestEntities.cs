@@ -91,6 +91,13 @@ public static class TestEntities
         return await db.Bookings.AsNoTracking().FirstOrDefaultAsync(b => b.Id == id);
     }
 
+    public static async Task<Venue?> LoadVenue(this DatabaseFixture fx, string id)
+    {
+        using var scope = fx.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Venues.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id);
+    }
+
     public static async Task<List<Booking>> LoadVenueBookings(this DatabaseFixture fx, string venueId)
     {
         using var scope = fx.Factory.Services.CreateScope();

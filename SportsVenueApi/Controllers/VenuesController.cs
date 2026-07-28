@@ -654,6 +654,50 @@ public class VenuesController : ControllerBase
             var pitchErr = ValidateAndNormalizePitches(req.Pitches);
             if (pitchErr != null)
                 return BadRequest(new ApiResponse<object> { Success = false, Message = pitchErr });
+
+            // Refuse to strand live bookings on a pitch that is being deleted.
+            //
+            // This is a double-sell, not a display bug. Every conflict filter matches a
+            // booking to a pitch by exact id — AvailabilityHelper.MatchesPitch:195,
+            // BookingsController.BookingOnPitch:1657, PermanentBookingsController:329 — and
+            // the legacy "first pitch of this sport" fallback fires only for a NULL pitch_id,
+            // never for a dangling one. So a booking whose pitch has been removed stops
+            // matching any pitch, drops out of every capacity sum, and the hour it occupies
+            // is offered for sale again while the customer still holds it.
+            //
+            // Read venue.Pitches BEFORE the assignment below: it is a [NotMapped] getter that
+            // re-deserialises the JSON column on each access, so afterwards the old list is
+            // simply gone.
+            var keptIds = req.Pitches.Select(p => p.Id!).ToHashSet(StringComparer.Ordinal);
+            var removedIds = venue.Pitches
+                .Select(p => p.Id!)
+                .Where(id => !string.IsNullOrEmpty(id) && !keptIds.Contains(id))
+                .ToList();
+
+            if (removedIds.Count > 0)
+            {
+                // Only the future contends for a slot. Past bookings keep their dead pitch id
+                // — they are history — so a pitch can still be retired once its diary is clear.
+                var today = PlatformConstants.JordanToday();
+                var liveBookings = await _db.Bookings.CountAsync(b =>
+                    b.VenueId == venue.Id
+                    && b.PitchId != null && removedIds.Contains(b.PitchId)
+                    && b.Status != "cancelled"
+                    && b.Date >= today);
+                var livePerms = await _db.PermanentBookings.CountAsync(p =>
+                    p.VenueId == venue.Id
+                    && p.PitchId != null && removedIds.Contains(p.PitchId)
+                    && p.Status == "active");
+
+                if (liveBookings + livePerms > 0)
+                    return Conflict(new ApiResponse<object>
+                    {
+                        Success = false,
+                        Message = $"Cannot remove that pitch: {liveBookings} upcoming booking(s) and " +
+                                  $"{livePerms} standing reservation(s) still use it. Cancel or move them first."
+                    });
+            }
+
             venue.Pitches = req.Pitches;
         }
 

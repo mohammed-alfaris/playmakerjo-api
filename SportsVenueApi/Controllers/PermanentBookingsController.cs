@@ -49,7 +49,7 @@ public class PermanentBookingsController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        if (!CanManageVenue(venue))
+        if (!CanViewVenue(venue))
             return Forbid();
 
         var q = _db.PermanentBookings.Where(p => p.VenueId == venueId);
@@ -71,7 +71,7 @@ public class PermanentBookingsController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        if (!CanManageVenue(venue))
+        if (!CanWriteVenue(venue))
             return Forbid();
 
         // 1. Validate day-of-week.
@@ -167,7 +167,7 @@ public class PermanentBookingsController : ControllerBase
         if (perm == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Permanent booking not found" });
 
-        if (!CanManageVenue(perm.Venue))
+        if (!CanWriteVenue(perm.Venue))
             return Forbid();
 
         if (perm.Status == "cancelled")
@@ -202,7 +202,30 @@ public class PermanentBookingsController : ControllerBase
 
     // ---- Helpers ----
 
-    private bool CanManageVenue(Venue venue) => VenueAccess.CanManage(venue, UserId, UserRole);
+    /// <summary>The venue_owner a staff caller works for. Null for every other role.</summary>
+    private string? StaffOwnerId => User.FindFirstValue("owner_id");
+
+    /// <summary>"read" | "write" for staff. Null otherwise.</summary>
+    private string? StaffPermissions => User.FindFirstValue("permissions");
+
+    /// <summary>
+    /// READ. Staff must be able to see standing reservations — this controller was still on
+    /// the old owner-only helper, so a counter clerk got a 403 here while the slot was
+    /// genuinely blocked. The schedule showed the hour free, the clerk promised it on the
+    /// phone, and the server only refused at save: after the customer had been told yes.
+    /// </summary>
+    private bool CanViewVenue(Venue venue) =>
+        VenueAccess.CanView(venue, UserId, UserRole, StaffOwnerId);
+
+    /// <summary>
+    /// WRITE. A standing booking blocks the same hour every week indefinitely — there is no
+    /// end date on the model — so it is a larger commitment than one booking. Still granted
+    /// to write-staff rather than owners only, because "same time next week" is exactly what
+    /// the person answering the phone is being asked for, and forcing them to call the owner
+    /// is how the feature stops being used.
+    /// </summary>
+    private bool CanWriteVenue(Venue venue) =>
+        VenueAccess.CanWrite(venue, UserId, UserRole, StaffOwnerId, StaffPermissions);
 
     /// <summary>Find the next date (today or later) whose DayOfWeek matches.</summary>
     private static DateTime NextDateForWeekday(int dow)
