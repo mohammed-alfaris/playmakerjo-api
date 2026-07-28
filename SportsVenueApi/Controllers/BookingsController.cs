@@ -1554,7 +1554,10 @@ public class BookingsController : ControllerBase
             RecurringGroupId = b.RecurringGroupId,
             Status = b.Status,
             IsManual = b.IsManual,
-            PitchSize = b.PitchSize ?? b.Venue.ParentSize,
+            // Resolved from the pitch: the venue-level ParentSize is the FOOTBALL size, so
+            // falling back to it unconditionally stamped a padel booking with "7" and the
+            // timeline drew "7v7" on a padel court.
+            PitchSize = b.PitchSize ?? PitchSizes.ParentSizeForPitch(b.Venue, b.PitchId),
             PaymentDeadlineAt = b.PaymentDeadlineAt?.ToString("yyyy-MM-ddTHH:mm:ssZ"),
             AutoCancelledAt = b.AutoCancelledAt?.ToString("yyyy-MM-ddTHH:mm:ssZ"),
             CreatedAt = b.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")

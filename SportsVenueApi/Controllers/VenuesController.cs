@@ -794,8 +794,10 @@ public class VenuesController : ControllerBase
                 Duration = b.Duration,
                 Sport = b.Sport,
                 PitchId = b.PitchId,
-                PitchSize = b.PitchSize ?? parent,
-                UnitWeight = PitchSizes.WeightOf(b.PitchSize ?? parent)
+                // Resolved from the pitch: `parent` is the venue's FOOTBALL size, so handing
+                // it to a padel booking both mislabelled it and made it weigh 4 units, not 1.
+                PitchSize = b.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, b.PitchId),
+                UnitWeight = PitchSizes.WeightOf(b.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, b.PitchId))
             })
             .OrderBy(s => s.StartTime)
             .ToList();
@@ -810,8 +812,8 @@ public class VenuesController : ControllerBase
                 Duration = p.Duration,
                 Sport = null,
                 PitchId = p.PitchId,
-                PitchSize = p.PitchSize ?? parent,
-                UnitWeight = PitchSizes.WeightOf(p.PitchSize ?? parent)
+                PitchSize = p.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, p.PitchId),
+                UnitWeight = PitchSizes.WeightOf(p.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, p.PitchId))
             }));
         legacyBookedSlots = legacyBookedSlots.OrderBy(s => s.StartTime).ToList();
 
