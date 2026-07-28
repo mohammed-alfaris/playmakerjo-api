@@ -2,7 +2,9 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
+using SportsVenueApi.Helpers;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Reviews;
 using SportsVenueApi.Models;
@@ -83,8 +85,13 @@ public class ReviewsController : ControllerBase
     [HttpGet("eligibility/{venueId}")]
     public async Task<IActionResult> Eligibility(string venueId)
     {
+        // Attendance is derived, not stored — see Helpers/Attendance. Testing Status ==
+        // "completed" alone locked out most genuine attendees, because a booking that went
+        // fine correctly stays "confirmed": nobody taps "completed" when nothing went wrong.
+        var today = PlatformConstants.JordanToday();
         var canReview = await _db.Bookings
-            .AnyAsync(b => b.VenueId == venueId && b.PlayerId == UserId && b.Status == "completed");
+            .Where(b => b.VenueId == venueId && b.PlayerId == UserId)
+            .AnyAsync(Attendance.AttendedExpr(today));
 
         var hasExistingReview = await _db.Reviews
             .AnyAsync(r => r.VenueId == venueId && r.PlayerId == UserId);
@@ -110,9 +117,13 @@ public class ReviewsController : ControllerBase
         if (!venueExists)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        var hasCompleted = await _db.Bookings
-            .AnyAsync(b => b.VenueId == req.VenueId && b.PlayerId == UserId && b.Status == "completed");
-        if (!hasCompleted)
+        // Same derived rule as Eligibility above — the two must never disagree, or the
+        // client offers a review form that the server then refuses.
+        var today = PlatformConstants.JordanToday();
+        var hasAttended = await _db.Bookings
+            .Where(b => b.VenueId == req.VenueId && b.PlayerId == UserId)
+            .AnyAsync(Attendance.AttendedExpr(today));
+        if (!hasAttended)
             return StatusCode(403, new ApiResponse<object>
             {
                 Success = false,

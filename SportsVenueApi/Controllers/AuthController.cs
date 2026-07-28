@@ -33,6 +33,21 @@ public class AuthController : ControllerBase
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
     }
 
+    // ── KNOWN GAP: there is no password recovery in this system at all ──────────────
+    //
+    // No forgot-password endpoint, no admin reset action, and no email infrastructure
+    // anywhere in the codebase to build one on. A venue owner who forgets their password
+    // today can only be helped by editing the database by hand.
+    //
+    // Deliberately deferred on 2026-07-28 until a business email domain exists — it needs
+    // a provider account, a verified sending domain and SPF/DKIM, not just code. Tracked
+    // with the full requirements in playmakerjo-docs/NEXT-FIXES.md as GAP-07.
+    //
+    // When it is built: the reset token is password-equivalent. Single-use, short expiry,
+    // STORED HASHED, never logged in production — and forgot-password must return the same
+    // response whether or not the address exists, or it becomes an account-enumeration
+    // oracle sitting on an unauthenticated route.
+
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest req)
     {

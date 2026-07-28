@@ -305,16 +305,35 @@ public class UsersController : ControllerBase
     [HttpPatch("{userId}/status")]
     public async Task<IActionResult> UpdateStatus(string userId, [FromBody] StatusUpdateRequest req)
     {
-        if (UserRole != "super_admin")
-            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Admin only" });
+        if (req.Status is not ("active" or "banned"))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Status must be 'active' or 'banned'" });
 
         var user = await _db.Users.FindAsync(userId);
         if (user == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
 
+        // An owner may suspend and restore THEIR OWN staff, and nobody else.
+        //
+        // This route was super_admin only while the dashboard showed owners a Suspend
+        // button on their My Team screen. The button 403'd and surfaced a generic error, so
+        // an owner could believe they had cut off a clerk who had in fact walked out with a
+        // working login. Suspending someone who no longer works for you is not a platform
+        // decision — it is the most basic thing an employer needs, and needing to phone the
+        // vendor for it is how a clerk keeps access for a week.
+        var isOwnStaff = UserRole == "venue_owner"
+            && user.Role == "venue_staff"
+            && user.ManagedByOwnerId == UserId;
+
+        if (UserRole != "super_admin" && !isOwnStaff)
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Not allowed" });
+
         user.Status = req.Status;
         await _db.SaveChangesAsync();
 
+        // NOTE: a suspended user keeps working until their access token expires (<=15 min).
+        // Refresh re-reads the row and refuses, so the window is bounded, not open. See
+        // GAP-19 in playmakerjo-docs/NEXT-FIXES.md — closing it entirely costs a database
+        // read on every authenticated request.
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "User status updated" });
     }
 

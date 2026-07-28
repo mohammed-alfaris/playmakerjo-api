@@ -650,6 +650,37 @@ public class CustomersController : ControllerBase
         return Ok(new ApiResponse<CustomerResponse> { Data = ToDto(customer, stats[customer.Id]), Message = "Archived" });
     }
 
+    /// <summary>
+    /// PATCH /api/v1/customers/{id}/restore — bring an archived customer back into the book.
+    ///
+    /// Archiving was one-way. An owner who archived the wrong Khalid — and there are several
+    /// Khalids — had no route back: the list only ever queries Status == "active", so the row
+    /// became invisible everywhere except the CSV export. The record was intact and
+    /// unreachable, which is the worst of both.
+    ///
+    /// Nothing is recreated here. The row never left; only its status moves, so the phone
+    /// number keeps its (owner, phone) uniqueness and every past booking stays attached.
+    /// </summary>
+    [HttpPatch("{id}/restore")]
+    public async Task<IActionResult> Restore(string id)
+    {
+        var customer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == id);
+        if (customer == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Customer not found" });
+
+        var ownerId = ResolveOwnerId(customer.OwnerId);
+        if (ownerId == null || ownerId != customer.OwnerId) return Forbid();
+        if (!CanWriteCustomers) return Forbid();
+
+        customer.Status = "active";
+        customer.ArchivedAt = null;
+        customer.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        var stats = await ComputeStatsAsync([customer.Id]);
+        return Ok(new ApiResponse<CustomerResponse> { Data = ToDto(customer, stats[customer.Id]), Message = "Restored" });
+    }
+
     private static CustomerResponse ToDto(Models.Customer c, CustomerStats stats) => new()
     {
         Id = c.Id,
