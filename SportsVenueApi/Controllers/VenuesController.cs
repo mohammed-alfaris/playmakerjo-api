@@ -93,7 +93,6 @@ public class VenuesController : ControllerBase
         SubSizes = v.SubSizes,
         SizePrices = v.SizePrices,
         SportsConfig = v.SportsConfig,
-        SportsIsolated = v.SportsIsolated,
         Pitches = PitchSizes.ResolvedPitches(v),
         CreatedAt = v.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
     };
@@ -517,8 +516,6 @@ public class VenuesController : ControllerBase
             venue.DepositPercentage = req.DepositPercentage.Value;
         if (req.SportsConfig != null)
             venue.SportsConfig = req.SportsConfig;
-        if (req.SportsIsolated.HasValue)
-            venue.SportsIsolated = req.SportsIsolated.Value;
         if (req.Pitches != null)
             venue.Pitches = req.Pitches;
 
@@ -644,9 +641,6 @@ public class VenuesController : ControllerBase
 
             venue.SportsConfig = req.SportsConfig;
         }
-
-        if (req.SportsIsolated.HasValue)
-            venue.SportsIsolated = req.SportsIsolated.Value;
 
         // Multi-pitch: validate + normalize before writing.
         if (req.Pitches != null)

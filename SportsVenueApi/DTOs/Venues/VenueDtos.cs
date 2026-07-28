@@ -151,9 +151,6 @@ public class VenueResponse
     [JsonPropertyName("sportsConfig")]
     public Dictionary<string, SportConfigDto> SportsConfig { get; set; } = [];
 
-    [JsonPropertyName("sportsIsolated")]
-    public bool SportsIsolated { get; set; }
-
     [JsonPropertyName("pitches")]
     public List<PitchDto> Pitches { get; set; } = [];
 
@@ -241,9 +238,6 @@ public class VenueCreateRequest
     [JsonPropertyName("sportsConfig")]
     public Dictionary<string, SportConfigDto>? SportsConfig { get; set; }
 
-    [JsonPropertyName("sportsIsolated")]
-    public bool? SportsIsolated { get; set; }
-
     [JsonPropertyName("pitches")]
     public List<PitchDto>? Pitches { get; set; }
 }
@@ -321,9 +315,6 @@ public class VenueUpdateRequest
 
     [JsonPropertyName("sportsConfig")]
     public Dictionary<string, SportConfigDto>? SportsConfig { get; set; }
-
-    [JsonPropertyName("sportsIsolated")]
-    public bool? SportsIsolated { get; set; }
 
     [JsonPropertyName("pitches")]
     public List<PitchDto>? Pitches { get; set; }
