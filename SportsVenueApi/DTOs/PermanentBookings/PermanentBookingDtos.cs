@@ -99,3 +99,39 @@ public class CreatePermanentBookingRequest
     [JsonPropertyName("customerName")]
     public string? CustomerName { get; set; }
 }
+
+/// <summary>Body of POST /permanent-bookings/{id}/record.</summary>
+public class RecordOccurrenceRequest
+{
+    /// <summary>The specific date being recorded, YYYY-MM-DD. Must fall on the rule's weekday.</summary>
+    [JsonPropertyName("date")]
+    public string Date { get; set; } = "";
+}
+
+/// <summary>What a recorded week produced — enough to open the booking and collect.</summary>
+public class RecordedOccurrenceDto
+{
+    [JsonPropertyName("bookingId")]
+    public string BookingId { get; set; } = "";
+
+    [JsonPropertyName("date")]
+    public string Date { get; set; } = "";
+
+    [JsonPropertyName("startTime")]
+    public string StartTime { get; set; } = "";
+
+    [JsonPropertyName("duration")]
+    public int Duration { get; set; }
+
+    [JsonPropertyName("totalAmount")]
+    public double TotalAmount { get; set; }
+
+    [JsonPropertyName("amountPaid")]
+    public double AmountPaid { get; set; }
+
+    [JsonPropertyName("customerName")]
+    public string? CustomerName { get; set; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "";
+}

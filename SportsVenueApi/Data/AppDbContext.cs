@@ -66,6 +66,10 @@ public class AppDbContext : DbContext
             // row that predates the column. So the index contains only the handful of live
             // unpaid holds, and the sweep never scans the largest table in the schema.
             e.HasIndex(b => new { b.PaymentDeadlineAt, b.Status });
+
+            // Looked up per date to work out which standing rules have already been
+            // materialised, on every conflict scan and every availability build.
+            e.HasIndex(b => new { b.PermanentBookingId, b.Date });
         });
 
         modelBuilder.Entity<RecurringBookingGroup>(e =>

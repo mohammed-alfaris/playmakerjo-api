@@ -389,11 +389,15 @@ public class BookingsController : ControllerBase
         // exactly like a real booking would. They never produce a Booking row, so
         // we feed them straight into the same capacity-unit reducer.
         var dow = (int)bookingDate.DayOfWeek;
-        var sameDayPermanents = await _db.PermanentBookings
-            .Where(p => p.VenueId == req.VenueId
-                && p.Status == "active"
-                && p.DayOfWeek == dow)
-            .ToListAsync();
+        var sameDayPermanents = StandingOccurrence.NotYetRecorded(
+            await _db.PermanentBookings
+                .Where(p => p.VenueId == req.VenueId
+                    && p.Status == "active"
+                    && p.DayOfWeek == dow)
+                .ToListAsync(),
+            // A rule whose week has already been recorded is no longer what holds the slot —
+            // the booking it produced is. Counting both would consume the pitch twice.
+            sameDayBookings);
         var pitchPermanents = sameDayPermanents
             .Where(p => PermanentOnPitch(p, venue, pitch))
             .ToList();

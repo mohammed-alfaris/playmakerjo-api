@@ -86,6 +86,22 @@ public class Booking
     [Column("notes", TypeName = "text")]
     public string? Notes { get; set; }
 
+    /// <summary>
+    /// The standing weekly rule this booking was materialised from, if any.
+    ///
+    /// A PermanentBooking is a RULE ("every Tuesday 20:00, Mohammed"), not a booking. It
+    /// blocks the slot but never becomes a row, so on its own there is nothing to take money
+    /// against, nothing to mark attended, and nothing that reaches the ledger or the
+    /// customer's history. Recording a week creates a real booking and points it back here.
+    ///
+    /// Load-bearing: once a week is materialised the parent rule must STOP blocking that
+    /// date, or the slot is consumed twice — invisible on a single-capacity pitch, but on a
+    /// subdividable one it eats two units instead of one.
+    /// </summary>
+    [Column("permanent_booking_id")]
+    [MaxLength(32)]
+    public string? PermanentBookingId { get; set; }
+
     [Column("recurring_group_id")]
     [MaxLength(32)]
     public string? RecurringGroupId { get; set; }

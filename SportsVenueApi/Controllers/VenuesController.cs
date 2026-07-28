@@ -762,9 +762,11 @@ public class VenuesController : ControllerBase
         // as additional booked slots without ever materialising into the bookings
         // table.
         var dow = (int)bookingDate.DayOfWeek;
-        var activePermanents = await _db.PermanentBookings
-            .Where(p => p.VenueId == venueId && p.Status == "active" && p.DayOfWeek == dow)
-            .ToListAsync();
+        var activePermanents = StandingOccurrence.NotYetRecorded(
+            await _db.PermanentBookings
+                .Where(p => p.VenueId == venueId && p.Status == "active" && p.DayOfWeek == dow)
+                .ToListAsync(),
+            existingBookings);
 
         var pitches = PitchSizes.ResolvedPitches(venue);
 

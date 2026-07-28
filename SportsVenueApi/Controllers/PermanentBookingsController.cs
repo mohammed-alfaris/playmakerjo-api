@@ -163,6 +163,136 @@ public class PermanentBookingsController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// POST /api/v1/permanent-bookings/{id}/record — turn ONE week of a standing
+    /// reservation into a real booking, so it can carry money.
+    ///
+    /// A standing reservation is a rule, not a booking. It blocks the slot every week and
+    /// never becomes a row — so there was no way to take the group's money, mark whether
+    /// they turned up, or have any of it reach the ledger, the reports or the customer's
+    /// history. And the obvious workaround, booking the slot normally, was refused: the
+    /// group's own reservation was sitting in it.
+    ///
+    /// Created UNPAID on purpose. A weekly group almost always pays cash on the night, so
+    /// the booking lands in the owner's "owes money" list until he collects — which is the
+    /// truth. Marking it paid on creation would put money in an append-only ledger before
+    /// anyone had handed anything over, and that cannot be taken back.
+    /// </summary>
+    [HttpPost("api/v1/permanent-bookings/{id}/record")]
+    public async Task<IActionResult> RecordOccurrence(string id, [FromBody] RecordOccurrenceRequest req)
+    {
+        var perm = await _db.PermanentBookings
+            .Include(p => p.Venue)
+            .Include(p => p.Customer)
+            .FirstOrDefaultAsync(p => p.Id == id);
+        if (perm == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Standing booking not found" });
+
+        if (!CanWriteVenue(perm.Venue))
+            return Forbid();
+
+        if (perm.Status != "active")
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "This standing booking is cancelled" });
+
+        if (!DateTime.TryParse(req.Date, out var date))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid date. Use YYYY-MM-DD" });
+        date = date.Date;
+
+        // The rule is weekly, so only its own weekday can be recorded.
+        if ((int)date.DayOfWeek != perm.DayOfWeek)
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = $"This standing booking is on {(DayOfWeek)perm.DayOfWeek}, not {date.DayOfWeek}"
+            });
+
+        // Idempotent: a second tap returns the booking already recorded rather than a
+        // duplicate. Two clerks reaching for the same group's money is a normal Tuesday.
+        var already = await _db.Bookings
+            .Include(b => b.Venue).Include(b => b.Player).Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.PermanentBookingId == perm.Id
+                                   && b.Date == date
+                                   && b.Status != "cancelled");
+        if (already != null)
+            return Ok(new ApiResponse<RecordedOccurrenceDto> { Data = Recorded(already), Message = "Already recorded" });
+
+        var pitch = PitchSizes.ResolvedPitches(perm.Venue)
+            .FirstOrDefault(p => perm.PitchId == null ? true : p.Id == perm.PitchId);
+        if (pitch == null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "The pitch for this standing booking no longer exists" });
+
+        // Same resolution order as a counter booking: per-size price, then the pitch's own
+        // rate, then the venue default.
+        double hourly;
+        if (perm.PitchSize != null && pitch.SizePrices.TryGetValue(perm.PitchSize, out var perSize))
+            hourly = perSize;
+        else if (pitch.PricePerHour > 0)
+            hourly = pitch.PricePerHour;
+        else
+            hourly = perm.Venue.PricePerHour;
+        var total = Math.Round(hourly * perm.Duration / 60.0, 3);
+
+        var booking = new Booking
+        {
+            VenueId = perm.VenueId,
+            // The owner's own account holds the row, exactly like a counter booking — the
+            // person is carried by CustomerId, which is why that link exists.
+            PlayerId = perm.Venue.OwnerId,
+            CustomerId = perm.CustomerId,
+            PermanentBookingId = perm.Id,
+            Sport = perm.Sport ?? pitch.Sport,
+            PitchId = perm.PitchId,
+            PitchSize = perm.PitchSize,
+            Date = date,
+            StartTime = perm.StartTime,
+            Duration = perm.Duration,
+            Amount = total,
+            TotalAmount = total,
+            DepositAmount = 0,
+            SystemFeePercentage = 0,
+            SystemFee = 0,
+            OwnerAmount = total,
+            PaymentMethod = "cash",
+            IsManual = true,
+            Status = "confirmed",
+            DepositPaid = false,
+            AmountPaid = 0,
+            Notes = perm.Label,
+        };
+
+        _db.Bookings.Add(booking);
+        await _db.SaveChangesAsync();
+
+        var created = await _db.Bookings
+            .Include(b => b.Venue).Include(b => b.Player).Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstAsync(b => b.Id == booking.Id);
+
+        return Ok(new ApiResponse<RecordedOccurrenceDto>
+        {
+            Data = Recorded(created),
+            Message = "This week recorded — collect the money from the booking"
+        });
+    }
+
+    /// <summary>
+    /// The booking a recorded week produced, reduced to what the caller needs to jump to it.
+    /// Deliberately not the full BookingResponse: that lives on BookingsController as a
+    /// private instance method, and duplicating it here would be a second copy to drift.
+    /// </summary>
+    private static RecordedOccurrenceDto Recorded(Booking b) => new()
+    {
+        BookingId = b.Id,
+        Date = b.Date.ToString("yyyy-MM-dd"),
+        StartTime = b.StartTime ?? "",
+        Duration = b.Duration,
+        TotalAmount = b.TotalAmount,
+        AmountPaid = b.AmountPaid,
+        CustomerName = b.Customer?.Name,
+        Status = b.Status,
+    };
+
     // PATCH /api/v1/permanent-bookings/{id}/cancel
     [HttpPatch("api/v1/permanent-bookings/{id}/cancel")]
     public async Task<IActionResult> Cancel(string id)
