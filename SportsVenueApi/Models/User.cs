@@ -65,6 +65,23 @@ public class User
     [MaxLength(5)]
     public string PreferredLanguage { get; set; } = "en";
 
+    /// <summary>
+    /// When this account's password last changed. Null means "never since this column
+    /// existed", which is every row at the time it was added.
+    ///
+    /// This is the ONLY session-revocation lever for a password change. Refresh tokens live
+    /// seven days and <c>POST /auth/refresh</c> validates only signature, expiry and
+    /// <c>Status != "banned"</c> — it never looks at the password. So without this column a
+    /// reset changed nothing for anyone already holding a refresh cookie: they kept minting
+    /// fresh access tokens for a week, which makes "reset their password" security theatre
+    /// in exactly the situation you would reset it.
+    ///
+    /// Refresh compares the token's <c>iat</c> against this and refuses anything older. The
+    /// ≤15-minute access-token window stays open, the same way it does for suspension.
+    /// </summary>
+    [Column("password_changed_at")]
+    public DateTime? PasswordChangedAt { get; set; }
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

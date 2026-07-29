@@ -179,12 +179,18 @@ static string UserOrIpKey(HttpContext context) =>
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
+    // 5/min per IP in production — brute-force protection on login. Configurable for the same
+    // reason the uploads limiter below is: the whole test suite shares one IP, and this policy
+    // covers /auth/refresh as well as /auth/login, so a handful of tests exercising session
+    // behaviour would exhaust the budget and fail whichever OTHER file happened to run next.
+    // That is a test-ordering failure with no relation to the code under test.
+    var authLimit = builder.Configuration.GetValue("RateLimiting:Auth:PermitLimit", 5);
     options.AddPolicy("auth", context =>
         RateLimitPartition.GetFixedWindowLimiter(
             context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 5,
+                PermitLimit = authLimit,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0
             }));

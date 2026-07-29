@@ -75,7 +75,16 @@ public class JwtService
         {
             new(JwtRegisteredClaimNames.Sub, userId),
             new("role", role),
-            new("type", type)
+            new("type", type),
+            // Issued-at, written explicitly rather than left to the library. It is what lets
+            // /auth/refresh refuse a token minted before the account's password changed —
+            // the only way a password reset can end sessions that are already open, since a
+            // refresh cookie is otherwise good for its full seven days. Set by hand because
+            // the value has to be depended on: a claim that is merely usually present is not
+            // something to hang session revocation off.
+            new(JwtRegisteredClaimNames.Iat,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
+                ClaimValueTypes.Integer64)
         };
 
         // venue_staff carry the owner they work for and their read/write level, so every

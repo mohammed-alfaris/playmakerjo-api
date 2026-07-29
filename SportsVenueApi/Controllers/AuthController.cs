@@ -1,3 +1,4 @@
+using System.IdentityModel.Tokens.Jwt;
 using Google.Apis.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -33,11 +34,16 @@ public class AuthController : ControllerBase
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
     }
 
-    // ── KNOWN GAP: there is no password recovery in this system at all ──────────────
+    // ── PARTIAL GAP: there is no SELF-SERVICE password recovery ─────────────────────
     //
-    // No forgot-password endpoint, no admin reset action, and no email infrastructure
-    // anywhere in the codebase to build one on. A venue owner who forgets their password
-    // today can only be helped by editing the database by hand.
+    // No forgot-password endpoint and no email infrastructure anywhere in the codebase to
+    // build one on. A user who forgets their password cannot recover it unaided.
+    //
+    // There IS now an admin path: POST /api/v1/users/{userId}/reset-password, available to
+    // super_admin for anyone and to a venue_owner for their own staff. It sidesteps the email
+    // dependency entirely by handing the new password to the admin to pass on. That covers
+    // the operational need — nobody has to edit the database by hand any more — but it still
+    // requires a human in the loop, so the self-service flow below remains unbuilt.
     //
     // Deliberately deferred on 2026-07-28 until a business email domain exists — it needs
     // a provider account, a verified sending domain and SPF/DKIM, not just code. Tracked
@@ -52,7 +58,17 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> Login([FromBody] LoginRequest req)
     {
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == req.Email);
-        if (user == null || !BCrypt.Net.BCrypt.Verify(req.Password, user.PasswordHash))
+
+        // The empty-hash check is not defensive tidying — it closes the enumeration oracle
+        // the comment above warns about. Google sign-in provisions accounts with
+        // PasswordHash = string.Empty, and BCrypt.Verify(anything, "") THROWS
+        // SaltParseException rather than returning false. That surfaced as a 500 where an
+        // unknown address returns 401, so the two were distinguishable: a password attempt
+        // told you whether an address existed as a Google account. One such row exists in
+        // production today.
+        if (user == null
+            || string.IsNullOrEmpty(user.PasswordHash)
+            || !BCrypt.Net.BCrypt.Verify(req.Password, user.PasswordHash))
             return Unauthorized(new ApiResponse<object> { Success = false, Message = "Invalid credentials" });
 
         if (user.Status == "banned")
@@ -185,6 +201,36 @@ public class AuthController : ControllerBase
         var user = await _db.Users.FindAsync(userId);
         if (user == null || user.Status == "banned")
             return Unauthorized(new ApiResponse<object> { Success = false, Message = "User not found or banned" });
+
+        // Refuse a token that predates the current password.
+        //
+        // Until this existed, changing a password ended nothing. Refresh checked signature,
+        // expiry and Status only, so whoever already held a refresh cookie kept minting fresh
+        // access tokens for its full seven days — including the person you reset the password
+        // because of. The reset looked effective and was not.
+        //
+        // Compared at whole-second resolution because that is what `iat` carries. A token
+        // minted in the same second as the change is allowed through: the only way to be in
+        // that window is to have authenticated at the moment of the change, and rounding the
+        // other way would log out the very session that just performed it.
+        if (user.PasswordChangedAt is { } changedAt)
+        {
+            var iatClaim = principal.FindFirst(JwtRegisteredClaimNames.Iat)?.Value;
+            // A token with no iat predates this mechanism entirely, so it cannot be shown to
+            // be current — treat it as stale rather than trusting it.
+            if (!long.TryParse(iatClaim, out var iatSeconds)
+                || DateTimeOffset.FromUnixTimeSeconds(iatSeconds).UtcDateTime
+                   < new DateTime(changedAt.Year, changedAt.Month, changedAt.Day,
+                                  changedAt.Hour, changedAt.Minute, changedAt.Second,
+                                  DateTimeKind.Utc))
+            {
+                return Unauthorized(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "Session ended because the password changed. Please sign in again."
+                });
+            }
+        }
 
         // Re-read the staff link and permission level from the row on every refresh, so a
         // revoked or downgraded staff member loses access within one access-token lifetime

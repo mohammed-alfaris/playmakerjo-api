@@ -76,7 +76,7 @@ public static class TestEntities
         return await fx.Insert(new User
         {
             Id = id, Name = "Throwaway Clerk", Email = $"{id}@test.local",
-            Phone = "+962790002000", PasswordHash = "never-logs-in",
+            Phone = "+962790002000", PasswordHash = BCrypt.Net.BCrypt.HashPassword(DatabaseFixture.TestPassword),
             Role = "venue_staff", Status = "active",
             Permissions = permissions, ManagedByOwnerId = ownerId
         });
@@ -103,13 +103,32 @@ public static class TestEntities
         return await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id);
     }
 
+    /// <summary>
+    /// A throwaway venue_owner whose password is DatabaseFixture.TestPassword.
+    ///
+    /// Needed because the seeded owners are shared by the whole suite: PayerAccessTests logs
+    /// in as them with that password, so a test that RESETS a seeded owner's password breaks
+    /// a different file with no obvious connection to it.
+    /// </summary>
+    public static async Task<User> CreateOwner(this DatabaseFixture fx)
+    {
+        var id = "u-" + Guid.NewGuid().ToString("N")[..8];
+        return await fx.Insert(new User
+        {
+            Id = id, Name = "Throwaway Owner", Email = $"{id}@test.local",
+            Phone = "+962790003000",
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(DatabaseFixture.TestPassword),
+            Role = "venue_owner", Status = "active"
+        });
+    }
+
     public static async Task<User> CreatePlayer(this DatabaseFixture fx)
     {
         var id = "u-" + Guid.NewGuid().ToString("N")[..8];
         return await fx.Insert(new User
         {
             Id = id, Name = "Throwaway Player", Email = $"{id}@test.local",
-            Phone = "+962790001000", PasswordHash = "never-logs-in",
+            Phone = "+962790001000", PasswordHash = BCrypt.Net.BCrypt.HashPassword(DatabaseFixture.TestPassword),
             Role = "player", Status = "active"
         });
     }

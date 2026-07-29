@@ -86,6 +86,23 @@ public class StatusUpdateRequest
     public string Status { get; set; } = "";
 }
 
+/// <summary>
+/// Returned once, by POST /users/{userId}/reset-password. The plaintext exists only in this
+/// response — it is bcrypt-hashed before the row is saved and is never logged, so if the
+/// admin loses it the only remedy is another reset.
+/// </summary>
+public class ResetPasswordResponse
+{
+    [JsonPropertyName("userId")]
+    public string UserId { get; set; } = "";
+
+    [JsonPropertyName("email")]
+    public string Email { get; set; } = "";
+
+    [JsonPropertyName("temporaryPassword")]
+    public string TemporaryPassword { get; set; } = "";
+}
+
 public class RoleUpdateRequest
 {
     [JsonPropertyName("role")]

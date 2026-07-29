@@ -18,10 +18,12 @@ public class UsersController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly string _uploadsBaseUrl;
+    private readonly ILogger<UsersController> _logger;
 
-    public UsersController(AppDbContext db, IConfiguration config)
+    public UsersController(AppDbContext db, IConfiguration config, ILogger<UsersController> logger)
     {
         _db = db;
+        _logger = logger;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
     }
 
@@ -132,6 +134,10 @@ public class UsersController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = "New password must be at least 8 characters" });
 
         user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.NewPassword);
+        // Changing your own password ends your other sessions too — which is the reason most
+        // people change one. Refresh tokens issued before this instant stop working; see
+        // AuthController.Refresh.
+        user.PasswordChangedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<object> { Message = "Password changed successfully" });
@@ -261,6 +267,19 @@ public class UsersController : ControllerBase
         if (await _db.Users.AnyAsync(u => u.Email == req.Email))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Email already in use" });
 
+        // This route validated the password not at all. CreateUserRequest.Password defaults
+        // to "", so a request that simply omitted the field created an account whose stored
+        // hash is bcrypt of the empty string — a real, loginable account with the password ""
+        // that looks completely normal in the users table. Only client-side zod stood in the
+        // way, which is no protection for an HTTP endpoint. Same rule as register and
+        // self-change.
+        if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 8)
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = "Password must be at least 8 characters"
+            });
+
         // Which owner does this staff member work for? An owner creating staff always gets
         // themselves; an admin must name the owner explicitly, because a staff account with
         // no owner can reach nothing and would look like a silent failure.
@@ -335,6 +354,64 @@ public class UsersController : ControllerBase
         // GAP-19 in playmakerjo-docs/NEXT-FIXES.md — closing it entirely costs a database
         // read on every authenticated request.
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "User status updated" });
+    }
+
+    /// <summary>
+    /// Set a new one-off password for another account and return it once.
+    ///
+    /// This is the whole of password recovery in this system. There is no email
+    /// infrastructure and no self-service forgot-password flow, so before this existed a
+    /// venue owner who forgot their password could only be helped by editing the database by
+    /// hand — which does not scale past the first customer, and is not something to be doing
+    /// at 9pm on a Friday.
+    ///
+    /// The server generates the password. An admin choosing one under pressure reaches for
+    /// something they already use, on an account that is not theirs.
+    /// </summary>
+    [HttpPost("{userId}/reset-password")]
+    public async Task<IActionResult> ResetPassword(string userId)
+    {
+        var user = await _db.Users.FindAsync(userId);
+        if (user == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
+
+        // Same shape as the suspension rule below: an owner may act on their own clerk and
+        // nobody else. An owner unsticking their own counter staff is routine employment
+        // admin, and routing it through the vendor is how a clerk sits locked out for a day.
+        var isOwnStaff = UserRole == "venue_owner"
+            && user.Role == "venue_staff"
+            && user.ManagedByOwnerId == UserId;
+
+        if (UserRole != "super_admin" && !isOwnStaff)
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Not allowed" });
+
+        var newPassword = TempPassword.Generate();
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(newPassword);
+
+        // The line that ends existing sessions. Without it the reset only stops FUTURE
+        // logins: whoever already holds a refresh cookie keeps minting access tokens for its
+        // full seven days, which is precisely the person a reset is aimed at.
+        // AuthController.Refresh compares each token's iat against this.
+        user.PasswordChangedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync();
+
+        // Actor and target only — never the password. This controller had no logging of any
+        // kind before now, so an admin changing another account left no trace at all.
+        _logger.LogInformation(
+            "Password reset for user {TargetUserId} ({TargetRole}) by {ActorUserId} ({ActorRole})",
+            user.Id, user.Role, UserId, UserRole);
+
+        return Ok(new ApiResponse<ResetPasswordResponse>
+        {
+            Data = new ResetPasswordResponse
+            {
+                UserId = user.Id,
+                Email = user.Email,
+                TemporaryPassword = newPassword
+            },
+            Message = "Password reset. Give this password to the user — it is shown only once."
+        });
     }
 
     [HttpPatch("{userId}/role")]
