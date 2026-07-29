@@ -82,6 +82,20 @@ public static class TestEntities
         });
     }
 
+    /// <summary>
+    /// Move a booking into the past. The API refuses to create one there, so this is the only
+    /// way to set up "a venue whose only bookings are history" — which is precisely the case
+    /// the venue-delete guard exists for.
+    /// </summary>
+    public static async Task BackdateBooking(this DatabaseFixture fx, string bookingId, DateTime date)
+    {
+        using var scope = fx.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var booking = await db.Bookings.FirstAsync(b => b.Id == bookingId);
+        booking.Date = date.Date;
+        await db.SaveChangesAsync();
+    }
+
     public static async Task<User?> LoadUser(this DatabaseFixture fx, string id)
     {
         using var scope = fx.Factory.Services.CreateScope();

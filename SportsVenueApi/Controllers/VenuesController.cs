@@ -720,6 +720,35 @@ public class VenuesController : ControllerBase
         if (!VenueAccess.CanManage(venue, UserId, UserRole))
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to manage this venue" });
 
+        // Every foreign key pointing at a venue is ON DELETE CASCADE, so this one call also
+        // destroys, irreversibly and without asking:
+        //
+        //     bookings            -> every booking ever taken here
+        //       payments          -> and, through bookings, the append-only ledger itself
+        //     permanent_bookings, recurring_booking_groups, reviews, favorites
+        //
+        // Only an ownership check stood in front of that. The pitch-removal guard above
+        // counts only FUTURE bookings, because retiring a pitch merely strands history and
+        // history is allowed to keep a dead pitch id. That reasoning does not transfer here:
+        // a past booking is exactly the row carrying the money, so ANY non-cancelled booking
+        // blocks the delete regardless of date.
+        //
+        // A venue that has traded is not something you delete. Deactivating it takes it off
+        // every public route while the history and the ledger stay intact, which is what the
+        // person clicking Delete almost always actually wants.
+        var bookings = await _db.Bookings.CountAsync(b => b.VenueId == venue.Id && b.Status != "cancelled");
+        var permanents = await _db.PermanentBookings.CountAsync(p => p.VenueId == venue.Id && p.Status == "active");
+
+        if (bookings + permanents > 0)
+            return Conflict(new ApiResponse<object>
+            {
+                Success = false,
+                Message = $"Cannot delete this venue: it has {bookings} booking(s) and {permanents} " +
+                          "standing reservation(s), and deleting it would erase them and their payment " +
+                          "records permanently. Set the venue's status to inactive instead — it stops " +
+                          "appearing publicly and keeps the history."
+            });
+
         _db.Venues.Remove(venue);
         await _db.SaveChangesAsync();
 
