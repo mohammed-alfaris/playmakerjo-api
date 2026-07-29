@@ -347,6 +347,38 @@ public class UsersController : ControllerBase
         if (user == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
 
+        // The column was previously assigned straight from the body with no check at all, so
+        // any string at all became a role — and every authorisation predicate in the system
+        // is written as an equality test against a known literal, meaning a typo produces an
+        // account that silently matches nothing rather than an error anyone sees.
+        if (req.Role is not ("super_admin" or "venue_owner" or "venue_staff" or "player"))
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = "Role must be one of: super_admin, venue_owner, venue_staff, player"
+            });
+
+        // A clerk is defined by WHO THEY WORK FOR, not by the role string alone. Promoting
+        // someone here left managed_by_owner_id and permissions null, and the token only
+        // carries those claims when they are non-empty (JwtService.cs:85-88) — so the account
+        // logged in perfectly and then reached nothing, with no error to explain why.
+        // Hiring goes through POST /api/v1/users, which sets the employer link.
+        if (req.Role == "venue_staff" && string.IsNullOrEmpty(user.ManagedByOwnerId))
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = "Create staff through the owner's team screen so they are linked to an employer."
+            });
+
+        // Moving OFF venue_staff must drop the employment, or a demoted clerk keeps a stale
+        // employer link and a stale permission that would come back the moment anyone set
+        // the role to venue_staff again.
+        if (user.Role == "venue_staff" && req.Role != "venue_staff")
+        {
+            user.ManagedByOwnerId = null;
+            user.Permissions = null;
+        }
+
         user.Role = req.Role;
         await _db.SaveChangesAsync();
 

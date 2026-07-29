@@ -607,7 +607,14 @@ public class BookingsController : ControllerBase
 
         // Players cancel their own, venue side cancels bookings for their venues,
         // admins cancel any. Everyone else is denied.
-        if (!CanAccessBooking(booking))
+        //
+        // CanAccessBooking would be wrong here: it is the VIEW predicate, and it admits
+        // read-only staff. Cancelling destroys a booking and frees the slot — that is a
+        // write by any reading, and "read" is supposed to mean watch the schedule and
+        // touch nothing. Every other state change on this controller already uses
+        // CanManageBooking; cancel was the one that did not.
+        var isOwnPlayerBooking = UserRole == "player" && booking.PlayerId == UserId;
+        if (!isOwnPlayerBooking && !CanManageBooking(booking))
             return Forbid();
 
         // Can only cancel pending/confirmed bookings

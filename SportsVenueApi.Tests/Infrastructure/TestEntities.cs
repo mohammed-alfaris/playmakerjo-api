@@ -64,6 +64,31 @@ public static class TestEntities
         return (venue, pitchId);
     }
 
+    /// <summary>
+    /// A throwaway clerk linked to an employer. Prefer this over mutating the fixture's
+    /// seeded staff rows — those are shared by the whole suite, and a test that changes one
+    /// and restores it afterwards fails open if its assertion throws first.
+    /// </summary>
+    public static async Task<User> CreateStaff(
+        this DatabaseFixture fx, string ownerId, string permissions = "read")
+    {
+        var id = "u-" + Guid.NewGuid().ToString("N")[..8];
+        return await fx.Insert(new User
+        {
+            Id = id, Name = "Throwaway Clerk", Email = $"{id}@test.local",
+            Phone = "+962790002000", PasswordHash = "never-logs-in",
+            Role = "venue_staff", Status = "active",
+            Permissions = permissions, ManagedByOwnerId = ownerId
+        });
+    }
+
+    public static async Task<User?> LoadUser(this DatabaseFixture fx, string id)
+    {
+        using var scope = fx.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id);
+    }
+
     public static async Task<User> CreatePlayer(this DatabaseFixture fx)
     {
         var id = "u-" + Guid.NewGuid().ToString("N")[..8];
