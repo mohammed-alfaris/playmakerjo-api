@@ -24,6 +24,7 @@ public class BookingsController : ControllerBase
     private readonly NotificationService _notifications;
     private readonly SettingsService _settings;
     private readonly ILogger<BookingsController> _logger;
+    private readonly ExpiryPolicy _expiry;
     private readonly string _uploadsBaseUrl;
 
     public BookingsController(
@@ -31,17 +32,63 @@ public class BookingsController : ControllerBase
         NotificationService notifications,
         SettingsService settings,
         ILogger<BookingsController> logger,
+        ExpiryPolicy expiry,
         IConfiguration config)
     {
         _db = db;
         _notifications = notifications;
         _settings = settings;
         _logger = logger;
+        _expiry = expiry;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
+
+    /// <summary>The venue_owner a staff caller works for. Null for every other role.</summary>
+    private string? StaffOwnerId => User.FindFirstValue("owner_id");
+
+    /// <summary>"read" | "write" for a staff caller. Null for every other role.</summary>
+    private string? StaffPermissions => User.FindFirstValue("permissions");
+
+    /// <summary>The owner whose data this caller belongs to — themselves, or their boss.</summary>
+    private string? EffectiveOwnerId => UserRole switch
+    {
+        "venue_owner" => UserId,
+        "venue_staff" => StaffOwnerId,
+        _ => null,
+    };
+
+    /// <summary>
+    /// May this caller act on the booking from the venue's side — i.e. confirm, complete,
+    /// mark no-show, or review a payment proof? Mirrors <see cref="Helpers.VenueAccess"/>.
+    ///
+    /// Every guard in this controller used to be written as a deny-list
+    /// (<c>if (UserRole == "venue_owner" &amp;&amp; ...) return Forbid();</c>), which named the
+    /// roles to block and let everything else through. A venue_staff token — a real role
+    /// this product creates — matched neither branch and so passed all of them, gaining
+    /// unrestricted control over every booking on the platform. Allow-listing instead
+    /// means an unrecognised or future role is denied rather than trusted.
+    /// Requires <c>booking.Venue</c> to be loaded.
+    /// </summary>
+    private bool CanManageBooking(Booking booking) =>
+        VenueAccess.CanWrite(booking.Venue, UserId, UserRole, StaffOwnerId, StaffPermissions);
+
+    /// <summary>
+    /// May this caller see or cancel this booking — venue-side, or the player who made it?
+    /// Read-only staff land here but not in <see cref="CanManageBooking"/>.
+    /// </summary>
+    private bool CanAccessBooking(Booking booking) =>
+        VenueAccess.CanView(booking.Venue, UserId, UserRole, StaffOwnerId)
+        || (UserRole == "player" && booking.PlayerId == UserId);
+
+    /// <summary>
+    /// Find-or-create the venue's customer for a walk-in. The rule itself lives in
+    /// Helpers/CustomerResolver so standing weekly reservations use the same one.
+    /// </summary>
+    private Task<string?> ResolveCustomerAsync(string ownerId, string? rawPhone, string? rawName) =>
+        CustomerResolver.ResolveAsync(_db, ownerId, rawPhone, rawName, UserId);
 
     // GET /api/v1/bookings — admin/owner list (existing, for dashboard)
     [HttpGet]
@@ -55,14 +102,30 @@ public class BookingsController : ControllerBase
         [FromQuery(Name = "from")] string? fromDate = null,
         [FromQuery(Name = "to")] string? toDate = null)
     {
-        var ownerId = owner_id;
-        if (UserRole == "venue_owner")
-            ownerId = UserId;
-
+        // Deny-by-default scoping. This previously pinned ownerId only for venue_owner
+        // and then applied the filter only when ownerId was non-empty — so a player,
+        // a venue_staff account, or any unrecognised role received EVERY booking on the
+        // platform, including other customers' names and every venue's amounts. Players
+        // have /bookings/my for their own list; this back-office list is not for them.
         var baseQuery = _db.Bookings.AsQueryable();
 
-        if (!string.IsNullOrEmpty(ownerId))
-            baseQuery = baseQuery.Where(b => b.Venue.OwnerId == ownerId);
+        if (UserRole == "super_admin")
+        {
+            // Admins may narrow to one owner; omitting owner_id means platform-wide.
+            if (!string.IsNullOrEmpty(owner_id))
+                baseQuery = baseQuery.Where(b => b.Venue.OwnerId == owner_id);
+        }
+        else if (EffectiveOwnerId is { Length: > 0 } scopedOwnerId)
+        {
+            // Owners see their own; staff see their employer's. owner_id from the query
+            // string is ignored in both cases — scope comes from the token. An unlinked
+            // staff account has no EffectiveOwnerId and falls through to Forbid.
+            baseQuery = baseQuery.Where(b => b.Venue.OwnerId == scopedOwnerId);
+        }
+        else
+        {
+            return Forbid();
+        }
 
         if (!string.IsNullOrEmpty(status))
             baseQuery = baseQuery.Where(b => b.Status == status);
@@ -112,6 +175,7 @@ public class BookingsController : ControllerBase
         var bookings = await baseQuery
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .OrderByDescending(b => b.Date)
             .Skip((page - 1) * limit)
@@ -143,6 +207,7 @@ public class BookingsController : ControllerBase
         var bookings = await baseQuery
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .OrderByDescending(b => b.Date)
             .ThenByDescending(b => b.StartTime)
@@ -166,19 +231,16 @@ public class BookingsController : ControllerBase
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == id);
 
         if (booking == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
 
-        // Players can only see their own bookings
-        // Owners can see bookings for their venues
-        // Admins can see all
-        if (UserRole == "player" && booking.PlayerId != UserId)
-            return Forbid();
-
-        if (UserRole == "venue_owner" && booking.Venue.OwnerId != UserId)
+        // Players see their own bookings, venue side sees bookings for their venues,
+        // admins see all. Everyone else is denied.
+        if (!CanAccessBooking(booking))
             return Forbid();
 
         return Ok(new ApiResponse<BookingResponse> { Data = ToDto(booking, includeFullProof: true) });
@@ -220,29 +282,6 @@ public class BookingsController : ControllerBase
                 Message = $"Duration must be between {venue.MinBookingDuration} and {venue.MaxBookingDuration} minutes"
             });
 
-        // Check operating hours for the day
-        var dayName = bookingDate.DayOfWeek.ToString().ToLower()[..3];  // "mon", "tue", etc.
-        var operatingHours = venue.OperatingHours;
-        if (operatingHours != null && operatingHours.TryGetValue(dayName, out var dayHoursObj))
-        {
-            var dayHoursJson = JsonSerializer.Serialize(dayHoursObj);
-            var dayHours = JsonSerializer.Deserialize<Dictionary<string, string>>(dayHoursJson);
-            if (dayHours != null)
-            {
-                if (TimeSpan.TryParse(dayHours.GetValueOrDefault("open", "00:00"), out var openTime) &&
-                    TimeSpan.TryParse(dayHours.GetValueOrDefault("close", "23:59"), out var closeTime))
-                {
-                    var endTimeSpan = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
-                    if (startTimeSpan < openTime || endTimeSpan > closeTime)
-                        return BadRequest(new ApiResponse<object>
-                        {
-                            Success = false,
-                            Message = $"Booking must be within operating hours ({dayHours["open"]} - {dayHours["close"]})"
-                        });
-                }
-            }
-        }
-
         // Resolve which pitch this booking lives on.
         var pitchResolution = ResolvePitchForBooking(venue, req.PitchId, req.Sport);
         if (pitchResolution.Error != null)
@@ -250,6 +289,42 @@ public class BookingsController : ControllerBase
                 ? NotFound(new ApiResponse<object> { Success = false, Message = pitchResolution.Error })
                 : BadRequest(new ApiResponse<object> { Success = false, Message = pitchResolution.Error });
         var pitch = pitchResolution.Pitch!;
+
+        // Operating-hours check. Deliberately after pitch resolution so a pitch with its
+        // own hours is honoured exactly as the availability view does.
+        //
+        // This used to build its own key as DayOfWeek.ToString().ToLower()[..3] ("mon")
+        // and look up ONLY that. The dashboard writes full day names ("monday"), so the
+        // lookup missed, the whole block was skipped, and operating hours were never
+        // enforced on booking creation for any venue — a player could book 03:00 on a
+        // closed day. It also never read the "closed" flag. AvailabilityHelper accepts
+        // both key styles and honours "closed", and is the same code the availability
+        // view uses, so the two can no longer disagree.
+        var dayName = bookingDate.DayOfWeek.ToString().ToLower();
+
+        var hoursCheck = AvailabilityHelper.CheckSlotAgainstHours(
+            venue, pitch, dayName, startTimeSpan, req.Duration);
+        switch (hoursCheck.Verdict)
+        {
+            case SlotHoursVerdict.Misconfigured:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "This venue's operating hours are misconfigured. Please contact the venue."
+                });
+            case SlotHoursVerdict.OutsideHours:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = $"Booking must be within operating hours ({hoursCheck.Open} - {hoursCheck.Close})"
+                });
+            case SlotHoursVerdict.Closed:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "The venue is closed on this day."
+                });
+        }
 
         // Pitch-size validation. Subdivision is football-only and carried on the pitch.
         string? pitchSize = null;
@@ -264,6 +339,36 @@ public class BookingsController : ControllerBase
                     Message = $"Pitch '{pitch.Name}' does not offer {pitchSize}-aside. Offered: {string.Join(", ", offered)}"
                 });
         }
+
+        // ── Everything from here to the commit is one serialized critical section ──
+        //
+        // Availability was a read-then-write with nothing in between: two people booking the
+        // same 21:00 slot both read "free", both passed the capacity check, and both
+        // committed. On a CliQ platform each of them then transfers a real deposit to the
+        // owner's alias for a pitch only one of them can have.
+        //
+        // A unique index cannot fix this. Subdividable pitches legitimately allow several
+        // overlapping rows on the same (venue, pitch, date, start_time) — an 11-aside field
+        // holds four 5-aside games at once — so the rule being enforced is a SUM against a
+        // capacity budget, not uniqueness. There is no column to make unique.
+        //
+        // So we serialize per venue: take a row lock on the venue, then read, decide and
+        // insert inside it. Concurrent attempts for the same venue queue behind the lock and
+        // each sees the previous one's booking. Different venues never block each other, and
+        // at this scale (a busy pitch takes ~7 bookings a day) the contention is nil.
+        await using var tx = await _db.Database.BeginTransactionAsync();
+
+        // FOR UPDATE on the venue row is the lock. AsNoTracking because `venue` is already
+        // tracked from the earlier Find; this query exists for its lock, not its result.
+        //
+        // Verified by removing this block and re-running ConcurrentBookingTests: three of
+        // the five fail without it, including five simultaneous requests all being accepted
+        // for the same slot. A test that passes with and without the fix proves nothing, so
+        // that check is worth repeating if this code is ever refactored.
+        _ = await _db.Venues
+            .FromSql($"SELECT * FROM venues WHERE id = {req.VenueId} FOR UPDATE")
+            .AsNoTracking()
+            .ToListAsync();
 
         // Overlap detection is scoped per-pitch. A booking on Pitch 1 never blocks
         // Pitch 2. Inside the pitch, subdividable pitches use the capacity-unit pool
@@ -284,11 +389,15 @@ public class BookingsController : ControllerBase
         // exactly like a real booking would. They never produce a Booking row, so
         // we feed them straight into the same capacity-unit reducer.
         var dow = (int)bookingDate.DayOfWeek;
-        var sameDayPermanents = await _db.PermanentBookings
-            .Where(p => p.VenueId == req.VenueId
-                && p.Status == "active"
-                && p.DayOfWeek == dow)
-            .ToListAsync();
+        var sameDayPermanents = StandingOccurrence.NotYetRecorded(
+            await _db.PermanentBookings
+                .Where(p => p.VenueId == req.VenueId
+                    && p.Status == "active"
+                    && p.DayOfWeek == dow)
+                .ToListAsync(),
+            // A rule whose week has already been recorded is no longer what holds the slot —
+            // the booking it produced is. Counting both would consume the pitch twice.
+            sameDayBookings);
         var pitchPermanents = sameDayPermanents
             .Where(p => PermanentOnPitch(p, venue, pitch))
             .ToList();
@@ -363,9 +472,34 @@ public class BookingsController : ControllerBase
         var isManual = req.IsManual;
         if (isManual)
         {
-            var allowed = UserRole == "super_admin" || (UserRole == "venue_owner" && venue.OwnerId == UserId);
-            if (!allowed)
+            // Admin, the venue's owner, or that owner's staff with "write". Read-only staff
+            // and everyone else are refused. This is the counter clerk's entire job, so it
+            // is the one place staff access genuinely has to work.
+            if (!VenueAccess.CanWrite(venue, UserId, UserRole, StaffOwnerId, StaffPermissions))
                 return Forbid();
+        }
+
+        // Who is this booking for, in THIS owner's book?
+        //
+        // Both channels resolve to the same customer record, keyed on phone. That is what
+        // makes the history complete: a regular who phones in June and switches to the app
+        // in July is one person with six bookings, not two people with three each — and
+        // does not wrongly appear in the "stopped coming" list.
+        //
+        // Resolution happens after the venue is known, so the customer always lands in the
+        // correct owner's book and never in a competitor's. Nothing here crosses owners:
+        // two owners each keep their own separate record of the same phone.
+        string? customerId;
+        if (isManual)
+        {
+            customerId = await ResolveCustomerAsync(venue.OwnerId, req.CustomerPhone, req.CustomerName);
+        }
+        else
+        {
+            // App booking: the player is the customer, from this venue's point of view.
+            // Their phone is optional on the User record, so this may resolve to nothing.
+            var bookingPlayer = await _db.Users.FindAsync(UserId);
+            customerId = await ResolveCustomerAsync(venue.OwnerId, bookingPlayer?.Phone, bookingPlayer?.Name);
         }
 
         // Calculate amounts + revenue split (platform fee read from settings).
@@ -391,6 +525,7 @@ public class BookingsController : ControllerBase
         {
             VenueId = req.VenueId,
             PlayerId = UserId,
+            CustomerId = customerId,
             Sport = req.Sport,
             PitchId = IsLegacyPitchId(pitch.Id) ? null : pitch.Id,
             PitchSize = pitchSize,
@@ -405,18 +540,47 @@ public class BookingsController : ControllerBase
             OwnerAmount = ownerAmount,
             PaymentMethod = req.PaymentMethod,
             Notes = req.Notes,
+            // The slot is held either way — a phone booking blocks the pitch whether or not
+            // the money has arrived yet. What changes is whether we claim to have been paid.
             Status = isManual ? "confirmed" : "pending_payment",
-            DepositPaid = isManual,
-            AmountPaid = isManual ? totalAmount : 0,
+            IsManual = isManual,
+            // Deliberately left unpaid here and raised below through PaymentLedger.Settle,
+            // so the amount and the row that evidences it are produced by the same call.
+            DepositPaid = false,
+            AmountPaid = 0,
+            // ARM THE ROW — and only this row, on only this path.
+            //
+            // A counter booking is never armed, because an owner holding a slot for someone
+            // he knows has made a decision the system has no business overruling at 3am.
+            // Null here means immune forever, not "due later"; see Booking.PaymentDeadlineAt.
+            PaymentDeadlineAt = isManual
+                ? null
+                : PaymentDeadline.Compute(DateTime.UtcNow, bookingDate, req.StartTime, _expiry),
         };
 
         _db.Bookings.Add(booking);
+
+        if (isManual && req.CustomerPaid)
+        {
+            var receipt = PaymentLedger.Settle(
+                booking, totalAmount, "full", UserId, "Paid at the venue");
+            if (receipt != null) _db.Payments.Add(receipt);
+        }
+
+        // One SaveChanges, inside the venue lock: the booking and its receipt commit
+        // together or neither does. Money recorded against a booking that failed to
+        // insert would be worse than no ledger at all.
         await _db.SaveChangesAsync();
+
+        // Releases the venue lock. The next queued attempt for this venue now reads a
+        // picture that includes this booking.
+        await tx.CommitAsync();
 
         // Reload with includes
         booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .FirstAsync(b => b.Id == booking.Id);
 
@@ -434,19 +598,23 @@ public class BookingsController : ControllerBase
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == id);
 
         if (booking == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
 
-        // Players can cancel their own bookings
-        // Owners can cancel bookings for their venues
-        // Admins can cancel any
-        if (UserRole == "player" && booking.PlayerId != UserId)
-            return Forbid();
-
-        if (UserRole == "venue_owner" && booking.Venue.OwnerId != UserId)
+        // Players cancel their own, venue side cancels bookings for their venues,
+        // admins cancel any. Everyone else is denied.
+        //
+        // CanAccessBooking would be wrong here: it is the VIEW predicate, and it admits
+        // read-only staff. Cancelling destroys a booking and frees the slot — that is a
+        // write by any reading, and "read" is supposed to mean watch the schedule and
+        // touch nothing. Every other state change on this controller already uses
+        // CanManageBooking; cancel was the one that did not.
+        var isOwnPlayerBooking = UserRole == "player" && booking.PlayerId == UserId;
+        if (!isOwnPlayerBooking && !CanManageBooking(booking))
             return Forbid();
 
         // Can only cancel pending/confirmed bookings
@@ -460,6 +628,10 @@ public class BookingsController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot cancel a no-show booking" });
 
         booking.Status = "cancelled";
+        // Disarm. A human cancelled this one — leaving a live deadline on a terminal row
+        // would let the sweep stamp AutoCancelledAt on it later and rewrite whose decision
+        // it was.
+        booking.PaymentDeadlineAt = null;
         await _db.SaveChangesAsync();
 
         // Notify player + owner about cancellation (non-blocking)
@@ -480,22 +652,48 @@ public class BookingsController : ControllerBase
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == id);
 
         if (booking == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
 
-        if (UserRole == "player")
-            return Forbid();
-
-        if (UserRole == "venue_owner" && booking.Venue.OwnerId != UserId)
+        if (!CanManageBooking(booking))
             return Forbid();
 
         if (booking.Status != "confirmed")
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Only confirmed bookings can be marked as completed" });
 
+        // Completing a booking is ONE act at the counter, not two: the customer played and he
+        // paid. So any outstanding balance is collected here rather than being a precondition
+        // the owner has to satisfy with a separate tap first.
+        //
+        // This is what makes the "owed" figure work. Owed counts attended-but-underpaid
+        // manual bookings, and completed always counts as attended — so if completing could
+        // leave a balance behind, a real debt would silently stop being visible the moment the
+        // owner marked the visit done. The customer who played and did NOT pay is represented
+        // by simply not completing the booking: it stays confirmed, the date passes, and the
+        // derived "attended" rule picks it up as owed. Absence of this tap IS the debt.
+        //
+        // For collecting money WITHOUT completing — an upcoming slot paid in advance, or a
+        // pending_payment booking settled at the counter — use mark-paid instead. This does
+        // not replace it; it just means the common case is one tap rather than two.
+        var remaining = Math.Round(booking.TotalAmount - booking.AmountPaid, 3);
+        var receipt = remaining > PaymentLedger.Epsilon
+            ? PaymentLedger.Settle(
+                booking, booking.TotalAmount, "balance", UserId, "Collected on completion")
+            : null;
+        if (receipt != null) _db.Payments.Add(receipt);
+
         booking.Status = "completed";
+        // Disarm, for the same reason Cancel does: a live deadline on a terminal row is a
+        // trap for the expiry sweep. It only looks at pending_payment today, so this is
+        // defence in depth rather than a live bug — but "completed" is exactly as terminal
+        // as "cancelled", and the two should not disagree about their own invariant.
+        booking.PaymentDeadlineAt = null;
+        // One SaveChanges: the status and its matching ledger row commit together or not at
+        // all. Splitting them is how a booking ends up completed with the money unrecorded.
         await _db.SaveChangesAsync();
 
         try { await _notifications.NotifyBookingCompleted(booking); }
@@ -504,7 +702,9 @@ public class BookingsController : ControllerBase
         return Ok(new ApiResponse<BookingResponse>
         {
             Data = ToDto(booking),
-            Message = "Booking marked as completed"
+            Message = receipt != null
+                ? $"Booking completed — {receipt.Amount:0.###} JOD collected"
+                : "Booking marked as completed"
         });
     }
 
@@ -515,16 +715,14 @@ public class BookingsController : ControllerBase
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == id);
 
         if (booking == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
 
-        if (UserRole == "player")
-            return Forbid();
-
-        if (UserRole == "venue_owner" && booking.Venue.OwnerId != UserId)
+        if (!CanManageBooking(booking))
             return Forbid();
 
         if (booking.Status != "confirmed")
@@ -543,6 +741,177 @@ public class BookingsController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// PATCH /api/v1/bookings/{id}/mark-paid — the money for a manual booking has arrived.
+    ///
+    /// The counterpart to <c>customerPaid: false</c> at creation: a slot booked by phone on
+    /// Sunday and paid on arrival Tuesday. Without this the owner would have no way to
+    /// settle it and the booking would sit as owing forever.
+    /// </summary>
+    [HttpPatch("{id}/mark-paid")]
+    public async Task<IActionResult> MarkPaid(string id)
+    {
+        var booking = await _db.Bookings
+            .Include(b => b.Venue)
+            .Include(b => b.Player)
+            .Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.Id == id);
+
+        if (booking == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
+
+        if (!CanManageBooking(booking))
+            return Forbid();
+
+        if (booking.Status is "cancelled")
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot settle a cancelled booking" });
+
+        var receipt = PaymentLedger.Settle(
+            booking,
+            booking.TotalAmount,
+            // A booking that already took a deposit is having its remainder settled; one
+            // that never took anything is being paid outright. The ledger should say which.
+            booking.AmountPaid <= PaymentLedger.Epsilon ? "full" : "balance",
+            UserId,
+            "Settled at the venue");
+
+        // Nothing left to collect. Returning 200 rather than an error is deliberate: a
+        // double-tap on a slow connection is not a mistake worth shouting about, and the
+        // end state the owner asked for is already true. What matters is that no second
+        // row is written, so the day's takings are not counted twice.
+        if (receipt == null)
+            return Ok(new ApiResponse<BookingResponse> { Data = ToDto(booking), Message = "Already settled" });
+
+        // The money is in. Whatever hold was on this slot, it is not an unpaid one any more.
+        booking.PaymentDeadlineAt = null;
+        _db.Payments.Add(receipt);
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<BookingResponse> { Data = ToDto(booking), Message = "Marked as paid" });
+    }
+
+    /// <summary>
+    /// GET /api/v1/bookings/attendance-pending — slots that have already happened but are
+    /// still sitting at "confirmed", i.e. nobody has said whether the customer turned up.
+    ///
+    /// This exists because nothing in the system can observe attendance. There is no gate,
+    /// no check-in, no sensor: the only source of truth is a human saying so. Left to
+    /// itself nobody ever taps "no-show" — there is no reason to, when everything went
+    /// fine — so the no-show count stays 0 forever and the warning that is supposed to
+    /// protect the owner never fires.
+    ///
+    /// The UI asks about the EXCEPTION, not the rule: "did anyone not turn up?", with
+    /// everyone assumed present. A normal day costs zero taps.
+    /// </summary>
+    [HttpGet("attendance-pending")]
+    public async Task<IActionResult> AttendancePending([FromQuery] int days = 7, [FromQuery] int limit = 50)
+    {
+        if (days is < 1 or > 30) days = 7;
+        if (limit is < 1 or > 200) limit = 50;
+
+        var today = PlatformConstants.JordanToday();
+        var since = today.AddDays(-days);
+
+        var query = _db.Bookings
+            .Include(b => b.Venue)
+            .Include(b => b.Player)
+            .Include(b => b.Customer)
+            .AsSplitQuery()
+            // Strictly before today: a slot later this afternoon has not happened yet, and
+            // asking about it would train the owner to answer before he knows.
+            .Where(b => b.Status == "confirmed" && b.Date.Date < today && b.Date.Date >= since);
+
+        if (UserRole == "super_admin")
+        {
+            // Nothing extra — admins review nothing in practice, but the shape stays uniform.
+        }
+        else if (EffectiveOwnerId is { Length: > 0 } ownerId)
+        {
+            query = query.Where(b => b.Venue.OwnerId == ownerId);
+        }
+        else
+        {
+            return Forbid();
+        }
+
+        var pending = await query
+            .OrderBy(b => b.Date)
+            .ThenBy(b => b.StartTime)
+            .Take(limit)
+            .ToListAsync();
+
+        return Ok(new ApiResponse<List<BookingResponse>>
+        {
+            Data = pending.Select(b => ToDto(b)).ToList()
+        });
+    }
+
+    /// <summary>
+    /// POST /api/v1/bookings/attendance-confirm — "everyone else turned up".
+    ///
+    /// Marks the given past bookings completed in one call. Deliberately separate from the
+    /// per-booking no-show tap: the owner marks the handful who did NOT come, then confirms
+    /// the rest in a single action.
+    ///
+    /// Skipping this entirely is safe. Attendance is DERIVED as
+    /// <c>completed OR (confirmed AND in the past AND not no_show)</c>, so an owner who
+    /// ignores the prompt still gets correct attendance counts — he just leaves the rows at
+    /// "confirmed". Confirming is what turns an assumption into a recorded fact, which is
+    /// also what makes "completed" trustworthy enough to hang revenue off later.
+    /// </summary>
+    [HttpPost("attendance-confirm")]
+    public async Task<IActionResult> AttendanceConfirm([FromBody] AttendanceConfirmRequest req)
+    {
+        if (req.BookingIds is not { Count: > 0 })
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "bookingIds is required" });
+
+        if (req.BookingIds.Count > 200)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Too many bookings in one call" });
+
+        var today = PlatformConstants.JordanToday();
+
+        var bookings = await _db.Bookings
+            .Include(b => b.Venue)
+            .Where(b => req.BookingIds.Contains(b.Id))
+            .ToListAsync();
+
+        var updated = 0;
+        foreach (var booking in bookings)
+        {
+            // Re-check every row: ids come from the client, and a stale tab could carry
+            // bookings from a venue the caller no longer manages.
+            if (!CanManageBooking(booking)) continue;
+            if (booking.Status != "confirmed") continue;
+            if (booking.Date.Date >= today) continue;
+
+            // Presence only. This deliberately does NOT settle the balance, unlike the
+            // single-booking Complete, and the asymmetry is the point.
+            //
+            // "Everyone came" is one tap answering one question: did these people turn up?
+            // Making it also assert that every one of them paid would fabricate payments
+            // that never happened — and they would land in an append-only ledger that
+            // cannot be corrected. An owner clearing a week of attendance in one tap has
+            // not counted anyone's money.
+            //
+            // What used to make this a trap was the dead end afterwards: Complete refuses a
+            // non-confirmed booking, so a bulk-confirmed row could never be settled through
+            // any screen and the customer read as owing forever. MarkPaid accepts anything
+            // that is not cancelled, and the dashboard now offers it on completed bookings
+            // that still owe, so the balance stays clearable.
+            booking.Status = "completed";
+            updated++;
+        }
+
+        if (updated > 0) await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<object>
+        {
+            Data = new { confirmed = updated },
+            Message = $"{updated} booking(s) marked as attended"
+        });
+    }
+
     // PATCH /api/v1/bookings/{id}/pay-card — TEMPORARILY DISABLED (CliQ only)
     [HttpPatch("{id}/pay-card")]
     public async Task<IActionResult> PayWithCard(string id)
@@ -553,6 +922,7 @@ public class BookingsController : ControllerBase
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == id);
 
@@ -589,6 +959,7 @@ public class BookingsController : ControllerBase
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == id);
 
@@ -607,9 +978,28 @@ public class BookingsController : ControllerBase
         if (string.IsNullOrEmpty(req.PaymentProof))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof image is required" });
 
+        // Proof is a base64 image we persist and later serve back to the owner —
+        // validate it's real base64, size-capped, and an actual image (not arbitrary
+        // bytes) before storing.
+        var proofData = req.PaymentProof;
+        var commaIdx = proofData.IndexOf(',');
+        if (proofData.StartsWith("data:") && commaIdx >= 0)
+            proofData = proofData[(commaIdx + 1)..];
+        byte[] proofBytes;
+        try { proofBytes = Convert.FromBase64String(proofData); }
+        catch (FormatException) { return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof is not valid base64" }); }
+        if (proofBytes.Length > 5 * 1024 * 1024)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof image is too large (max 5MB)" });
+        if (!ImageBytes.HasAllowedSignature(proofBytes))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof is not a valid image" });
+
         booking.PaymentProof = req.PaymentProof;
         booking.PaymentProofStatus = "pending_review";
         booking.Status = "pending_review";
+        // DISARM. The customer has done their part and the CliQ transfer may already be
+        // real; from here the booking is waiting on the OWNER to look at a screenshot.
+        // Expiring it would penalise the customer for the venue's inaction.
+        booking.PaymentDeadlineAt = null;
         await _db.SaveChangesAsync();
 
         // Notify venue owner about new proof (non-blocking)
@@ -630,17 +1020,16 @@ public class BookingsController : ControllerBase
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == id);
 
         if (booking == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
 
-        // Only venue owner or admin can review
-        if (UserRole == "venue_owner" && booking.Venue.OwnerId != UserId)
-            return Forbid();
-
-        if (UserRole == "player")
+        // Only the venue's own side may review a payment proof — approving one marks
+        // money as received, so this must never fall through to an unnamed role.
+        if (!CanManageBooking(booking))
             return Forbid();
 
         if (booking.PaymentProofStatus != "pending_review")
@@ -649,10 +1038,20 @@ public class BookingsController : ControllerBase
         if (req.Approved)
         {
             booking.PaymentProofStatus = "approved";
-            booking.DepositPaid = true;
-            booking.AmountPaid = booking.DepositAmount;
             booking.Status = "confirmed";
             booking.PaymentProofNote = null;
+            booking.PaymentDeadlineAt = null;
+
+            // Approving a screenshot is the moment a human asserts the transfer is real, so
+            // it is the moment worth recording — with the reviewer's id attached, because
+            // approval is a judgement call someone has to answer for.
+            //
+            // Settle only ever raises the paid amount. The line it replaces assigned
+            // DepositAmount outright, which would silently REDUCE the recorded total on a
+            // booking that had already paid more.
+            var receipt = PaymentLedger.Settle(
+                booking, booking.DepositAmount, "deposit", UserId, "CliQ proof approved", "cliq");
+            if (receipt != null) _db.Payments.Add(receipt);
         }
         else
         {
@@ -660,6 +1059,18 @@ public class BookingsController : ControllerBase
             booking.PaymentProofNote = req.Note ?? "Payment proof was rejected";
             booking.Status = "pending_payment";  // back to pending so player can re-upload
             booking.PaymentProof = null;  // clear the rejected proof
+
+            // RE-ARM FROM NOW, not from creation.
+            //
+            // This is the whole reason the deadline is a stored instant rather than an age
+            // computed from CreatedAt at sweep time. A booking bounced back for a blurry
+            // screenshot re-enters pending_payment with CreatedAt untouched, and the table
+            // has no updated_at — so "how long has it been waiting" is not answerable from
+            // the row. Re-stamping makes it answerable, and gives the customer a fresh,
+            // full window to re-upload instead of a deadline that expired hours ago.
+            booking.PaymentDeadlineAt = booking.IsManual
+                ? null
+                : PaymentDeadline.Compute(DateTime.UtcNow, booking.Date, booking.StartTime, _expiry);
         }
 
         await _db.SaveChangesAsync();
@@ -692,23 +1103,42 @@ public class BookingsController : ControllerBase
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == id);
 
         if (booking == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
 
-        if (UserRole == "venue_owner" && booking.Venue.OwnerId != UserId)
-            return Forbid();
-
-        if (UserRole == "player" && booking.PlayerId != UserId)
+        // Venue side only. The old guard permitted a player acting on their OWN booking,
+        // which was a complete payment bypass: create a pending_payment booking, call
+        // this endpoint, and walk away with status=confirmed and depositPaid=true having
+        // transferred nothing. A player's route to confirmed is upload-proof, then the
+        // venue approving it in review-proof.
+        if (!CanManageBooking(booking))
             return Forbid();
 
         if (booking.Status != "pending" && booking.Status != "pending_payment")
             return BadRequest(new ApiResponse<object> { Success = false, Message = $"Cannot confirm a booking with status '{booking.Status}'" });
 
         booking.Status = "confirmed";
-        booking.DepositPaid = true;
+        booking.PaymentDeadlineAt = null;
+
+        // Confirming a booking that was waiting on money IS the owner stating the deposit
+        // arrived — that is the only thing this flag has ever meant. The line this replaces
+        // set DepositPaid = true and left AmountPaid at zero, so the row claimed to be paid
+        // and to have received nothing at the same time, and the customer's balance owed
+        // was overstated by the deposit on every booking confirmed this way.
+        var receipt = PaymentLedger.Settle(
+            booking, booking.DepositAmount, "deposit", UserId, "Confirmed by the venue");
+
+        if (receipt != null)
+            _db.Payments.Add(receipt);
+        else
+            // A venue configured with no deposit has nothing to receive at this point, so
+            // there is no payment to record — but the flag is still vacuously true.
+            booking.DepositPaid = true;
+
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<BookingResponse>
@@ -798,37 +1228,46 @@ public class BookingsController : ControllerBase
 
         // Validate operating hours for that day-of-week (same every week).
         // Pitch-level operating_hours (when set) take precedence over the venue's.
+        // Same 3-letter-key bug the one-off path had: this built "sun" while the dashboard
+        // writes "sunday", so the lookup missed and hours were never enforced on a recurring
+        // series either. AvailabilityHelper accepts both spellings and honours "closed".
         var endTime = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
-        var dayName = startDate.DayOfWeek.ToString().ToLower()[..3];
-        Dictionary<string, object>? operatingHours = null;
-        if (pitch.OperatingHours is Dictionary<string, object> pitchHoursDict)
-            operatingHours = pitchHoursDict;
-        else if (pitch.OperatingHours != null)
+        var dayName = startDate.DayOfWeek.ToString().ToLower();
+
+        var hoursCheck = AvailabilityHelper.CheckSlotAgainstHours(
+            venue, pitch, dayName, startTimeSpan, req.Duration);
+        switch (hoursCheck.Verdict)
         {
-            try
-            {
-                var json = JsonSerializer.Serialize(pitch.OperatingHours);
-                operatingHours = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-            }
-            catch { /* fall through to venue hours */ }
+            case SlotHoursVerdict.Misconfigured:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "This venue's operating hours are misconfigured. Please contact the venue."
+                });
+            case SlotHoursVerdict.OutsideHours:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = $"Booking must be within operating hours ({hoursCheck.Open} - {hoursCheck.Close})"
+                });
+            case SlotHoursVerdict.Closed:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "The venue is closed on this day."
+                });
         }
-        operatingHours ??= venue.OperatingHours;
-        if (operatingHours != null && operatingHours.TryGetValue(dayName, out var dayHoursObj))
-        {
-            var dayHoursJson = JsonSerializer.Serialize(dayHoursObj);
-            var dayHours = JsonSerializer.Deserialize<Dictionary<string, string>>(dayHoursJson);
-            if (dayHours != null &&
-                TimeSpan.TryParse(dayHours.GetValueOrDefault("open", "00:00"), out var openTime) &&
-                TimeSpan.TryParse(dayHours.GetValueOrDefault("close", "23:59"), out var closeTime))
-            {
-                if (startTimeSpan < openTime || endTime > closeTime)
-                    return BadRequest(new ApiResponse<object>
-                    {
-                        Success = false,
-                        Message = $"Booking must be within operating hours ({dayHours["open"]} - {dayHours["close"]})"
-                    });
-            }
-        }
+
+        // Same serialized critical section as the one-off path. This method already opened
+        // a transaction, but only AFTER the conflict scan — which left exactly the race the
+        // transaction looked like it was preventing. The lock has to be taken before the
+        // read, not before the write.
+        await using var tx = await _db.Database.BeginTransactionAsync();
+
+        _ = await _db.Venues
+            .FromSql($"SELECT * FROM venues WHERE id = {req.VenueId} FOR UPDATE")
+            .AsNoTracking()
+            .ToListAsync();
 
         // Pre-load candidate bookings in the date range. Scope to the same pitch
         // only — bookings on other pitches never block this one. Load everything
@@ -944,7 +1383,7 @@ public class BookingsController : ControllerBase
             Status = "active",
         };
 
-        await using var tx = await _db.Database.BeginTransactionAsync();
+        // The transaction was opened before the conflict scan above.
         _db.RecurringBookingGroups.Add(group);
 
         var newBookings = validDates.Select(date => new Booking
@@ -978,6 +1417,7 @@ public class BookingsController : ControllerBase
         var reloaded = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
+            .Include(b => b.Customer)
             .AsSplitQuery()
             .Where(b => ids.Contains(b.Id))
             .OrderBy(b => b.Date)
@@ -1006,9 +1446,12 @@ public class BookingsController : ControllerBase
         if (group == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Series not found" });
 
-        if (UserRole == "player" && group.PlayerId != UserId)
-            return Forbid();
-        if (UserRole == "venue_owner" && group.Venue.OwnerId != UserId)
+        // Allow-list: the series owner's player account, the venue side, or an admin.
+        var canCancelSeries =
+            UserRole == "super_admin"
+            || (UserRole == "venue_owner" && group.Venue.OwnerId == UserId)
+            || (UserRole == "player" && group.PlayerId == UserId);
+        if (!canCancelSeries)
             return Forbid();
 
         var today = PlatformConstants.JordanToday();
@@ -1043,6 +1486,34 @@ public class BookingsController : ControllerBase
             resolvedPitchId = first?.Id;
         }
 
+        // Is the caller on the venue's own side of the counter — its owner, that
+        // owner's linked staff, or an admin? Two fields below are back-office only,
+        // and both used to travel to every caller who could reach a booking.
+        // Fails closed: an unloaded Venue navigation yields no back-office access
+        // rather than an accidental grant.
+        var isBackOffice = b.Venue != null
+            && VenueAccess.CanView(b.Venue, UserId, UserRole, StaffOwnerId);
+
+        // The player on THIS booking. Not a role — a relationship to one row.
+        //
+        // Closing the alias leak went one step too far: it removed the value from
+        // everyone outside the back office, including the one person being asked to
+        // transfer money. The app rendered its placeholder string where the alias
+        // should be, so the booking could never be paid and the expiry sweep
+        // eventually cancelled it. A security fix that silently breaks the payment
+        // funnel is a worse outage than the leak it closed.
+        //
+        // Deliberately NOT done by widening VenueAccess.CanView: that helper decides
+        // back-office access in a dozen places, and a player must not gain any of
+        // them. This grants exactly one venue's alias to someone already holding a
+        // booking there — the person who needs it, and no wider.
+        // The ROLE check is load-bearing, not decoration. Without it a rival venue_owner
+        // books a slot at a competitor's pitch and reads the alias straight off their own
+        // booking — a harvest that costs one booking per victim. Restricting to players
+        // means an attacker must hold a player account and make a real, payable booking to
+        // learn one venue's alias, which is indistinguishable from being a customer.
+        var isBookingOwner = UserRole == "player" && b.PlayerId == UserId;
+
         var dto = new BookingResponse
         {
             Id = b.Id,
@@ -1054,9 +1525,24 @@ public class BookingsController : ControllerBase
                 City = b.Venue.City,
                 CityAr = b.Venue.CityAr,
                 Images = b.Venue.Images?.Select(x => UploadUrlHelper.Normalize(x, _uploadsBaseUrl)).ToList()!,
-                CliqAlias = b.Venue.CliqAlias
+                // The alias was stripped from the venue routes and left here, so it
+                // stayed harvestable: POST a booking against any venue id, read it
+                // off the 201, cancel. Venue ids come from the anonymous public list,
+                // so a free account could sweep the whole platform.
+                //
+                // That sweep is still blocked — but the player who booked now gets it,
+                // because they cannot pay without it. Harvesting one alias by making a
+                // real booking you must then pay for is not a leak; it is a customer.
+                CliqAlias = (isBackOffice || isBookingOwner) ? b.Venue.CliqAlias : null
             },
             Player = new PlayerRef { Id = b.Player.Id, Name = b.Player.Name },
+            // The customer book belongs to the venue, not to whoever is holding the
+            // slot. A player's profile phone is self-asserted and unverified, so
+            // returning the matched customer told them the name behind any number
+            // they cared to type. Players learn nothing here they did not supply.
+            Customer = isBackOffice && b.Customer != null
+                ? new CustomerRef { Id = b.Customer.Id, Name = b.Customer.Name, Phone = b.Customer.Phone }
+                : null,
             Sport = b.Sport,
             PitchId = resolvedPitchId,
             Date = b.Date.ToString("yyyy-MM-dd"),
@@ -1074,20 +1560,30 @@ public class BookingsController : ControllerBase
             PaymentProofNote = b.PaymentProofNote,
             RecurringGroupId = b.RecurringGroupId,
             Status = b.Status,
-            PitchSize = b.PitchSize ?? b.Venue.ParentSize,
+            IsManual = b.IsManual,
+            // Resolved from the pitch: the venue-level ParentSize is the FOOTBALL size, so
+            // falling back to it unconditionally stamped a padel booking with "7" and the
+            // timeline drew "7v7" on a padel court.
+            PitchSize = b.PitchSize ?? PitchSizes.ParentSizeForPitch(b.Venue, b.PitchId),
+            PaymentDeadlineAt = b.PaymentDeadlineAt?.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            AutoCancelledAt = b.AutoCancelledAt?.ToString("yyyy-MM-ddTHH:mm:ssZ"),
             CreatedAt = b.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
         };
 
-        // Revenue split — admin sees all, owner sees only their cut
+        // The revenue split is a platform concept and stays on the platform side.
+        //
+        // The product is sold as the venue's own management system, so an owner is not one
+        // tenant of a marketplace taking a cut — he is a subscriber. Showing him a "platform
+        // fee" and an "owner payout" tells him someone upstream is skimming his takings and
+        // invites the one objection that kills the sale. Staff never see money at all.
+        //
+        // Note this is stripped at the DTO, not merely hidden in the UI: the fields used to
+        // travel to the browser on every booking even when nothing rendered them.
         if (UserRole == "super_admin")
         {
             dto.SystemFee = b.SystemFee;
             dto.OwnerAmount = b.OwnerAmount;
             dto.SystemFeePercentage = b.SystemFeePercentage;
-        }
-        else if (UserRole == "venue_owner")
-        {
-            dto.OwnerAmount = b.OwnerAmount;
         }
 
         return dto;

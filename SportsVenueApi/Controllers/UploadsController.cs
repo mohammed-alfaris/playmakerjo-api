@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using SportsVenueApi.DTOs;
+using SportsVenueApi.Helpers;
 
 namespace SportsVenueApi.Controllers;
 
@@ -87,6 +88,17 @@ public class UploadsController : ControllerBase
         {
             _logger.LogWarning("Upload 400: invalid extension '{Ext}' (filename={FileName}, contentType={ContentType})", ext, file.FileName, file.ContentType);
             return BadRequest(new ApiResponse<object> { Success = false, Message = $"Invalid file type '{(ext == "" ? "(none)" : ext)}'. Allowed: {string.Join(", ", allowedExtensions)}" });
+        }
+
+        // Verify the actual bytes are a real image (extension/MIME can be spoofed).
+        var head = new byte[16];
+        int headRead;
+        await using (var probe = file.OpenReadStream())
+            headRead = await probe.ReadAtLeastAsync(head, 12, throwOnEndOfStream: false);
+        if (!ImageBytes.HasAllowedSignature(head.AsSpan(0, headRead)))
+        {
+            _logger.LogWarning("Upload 400: content is not a valid image (filename={FileName})", file.FileName);
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "File content is not a valid image." });
         }
 
         // Map category to folder

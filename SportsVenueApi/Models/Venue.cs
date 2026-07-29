@@ -103,6 +103,15 @@ public class Venue
     // false = all sports share the physical space — any booking blocks every
     // sport at that time.
     [Column("sports_isolated")]
+    /// <summary>
+    /// DEAD. Nothing reads this — it was persisted, echoed in the DTO and auto-assigned by
+    /// the venue form (as "this venue has more than one sport"), but no capacity, availability
+    /// or booking rule ever consulted it. The API surface and the client write are gone.
+    ///
+    /// The column stays because dropping it would be this project's first destructive
+    /// migration, and an unread nullable column costs nothing. Do not start using it without
+    /// deciding what it means first — the old auto-assigned values are meaningless.
+    /// </summary>
     public bool SportsIsolated { get; set; } = false;
 
     // Multi-pitch venues: a JSON array of physically independent pitches, each

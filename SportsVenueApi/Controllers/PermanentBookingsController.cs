@@ -49,10 +49,10 @@ public class PermanentBookingsController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        if (!CanManageVenue(venue))
+        if (!CanViewVenue(venue))
             return Forbid();
 
-        var q = _db.PermanentBookings.Where(p => p.VenueId == venueId);
+        var q = _db.PermanentBookings.Include(p => p.Customer).Where(p => p.VenueId == venueId);
         if (!string.IsNullOrEmpty(status))
             q = q.Where(p => p.Status == status);
 
@@ -71,7 +71,7 @@ public class PermanentBookingsController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        if (!CanManageVenue(venue))
+        if (!CanWriteVenue(venue))
             return Forbid();
 
         // 1. Validate day-of-week.
@@ -146,6 +146,12 @@ public class PermanentBookingsController : ControllerBase
             LabelAr = string.IsNullOrWhiteSpace(req.LabelAr) ? null : req.LabelAr.Trim(),
             Status = "active",
             CreatedByUserId = UserId,
+            // The organiser of a standing group. Roughly 40% of a pitch's bookings are these
+            // weekly regulars, and until now not one of them existed in the customer book —
+            // the owner's most valuable relationships were the only ones he had no record of.
+            // Optional, exactly like a walk-in: a missing phone must never block the booking.
+            CustomerId = await CustomerResolver.ResolveAsync(
+                _db, venue.OwnerId, req.CustomerPhone, req.CustomerName, UserId),
         };
         _db.PermanentBookings.Add(perm);
         await _db.SaveChangesAsync();
@@ -157,17 +163,148 @@ public class PermanentBookingsController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// POST /api/v1/permanent-bookings/{id}/record — turn ONE week of a standing
+    /// reservation into a real booking, so it can carry money.
+    ///
+    /// A standing reservation is a rule, not a booking. It blocks the slot every week and
+    /// never becomes a row — so there was no way to take the group's money, mark whether
+    /// they turned up, or have any of it reach the ledger, the reports or the customer's
+    /// history. And the obvious workaround, booking the slot normally, was refused: the
+    /// group's own reservation was sitting in it.
+    ///
+    /// Created UNPAID on purpose. A weekly group almost always pays cash on the night, so
+    /// the booking lands in the owner's "owes money" list until he collects — which is the
+    /// truth. Marking it paid on creation would put money in an append-only ledger before
+    /// anyone had handed anything over, and that cannot be taken back.
+    /// </summary>
+    [HttpPost("api/v1/permanent-bookings/{id}/record")]
+    public async Task<IActionResult> RecordOccurrence(string id, [FromBody] RecordOccurrenceRequest req)
+    {
+        var perm = await _db.PermanentBookings
+            .Include(p => p.Venue)
+            .Include(p => p.Customer)
+            .FirstOrDefaultAsync(p => p.Id == id);
+        if (perm == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Standing booking not found" });
+
+        if (!CanWriteVenue(perm.Venue))
+            return Forbid();
+
+        if (perm.Status != "active")
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "This standing booking is cancelled" });
+
+        if (!DateTime.TryParse(req.Date, out var date))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid date. Use YYYY-MM-DD" });
+        date = date.Date;
+
+        // The rule is weekly, so only its own weekday can be recorded.
+        if ((int)date.DayOfWeek != perm.DayOfWeek)
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = $"This standing booking is on {(DayOfWeek)perm.DayOfWeek}, not {date.DayOfWeek}"
+            });
+
+        // Idempotent: a second tap returns the booking already recorded rather than a
+        // duplicate. Two clerks reaching for the same group's money is a normal Tuesday.
+        var already = await _db.Bookings
+            .Include(b => b.Venue).Include(b => b.Player).Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.PermanentBookingId == perm.Id
+                                   && b.Date == date
+                                   && b.Status != "cancelled");
+        if (already != null)
+            return Ok(new ApiResponse<RecordedOccurrenceDto> { Data = Recorded(already), Message = "Already recorded" });
+
+        var pitch = PitchSizes.ResolvedPitches(perm.Venue)
+            .FirstOrDefault(p => perm.PitchId == null ? true : p.Id == perm.PitchId);
+        if (pitch == null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "The pitch for this standing booking no longer exists" });
+
+        // Same resolution order as a counter booking: per-size price, then the pitch's own
+        // rate, then the venue default.
+        double hourly;
+        if (perm.PitchSize != null && pitch.SizePrices.TryGetValue(perm.PitchSize, out var perSize))
+            hourly = perSize;
+        else if (pitch.PricePerHour > 0)
+            hourly = pitch.PricePerHour;
+        else
+            hourly = perm.Venue.PricePerHour;
+        var total = Math.Round(hourly * perm.Duration / 60.0, 3);
+
+        var booking = new Booking
+        {
+            VenueId = perm.VenueId,
+            // The owner's own account holds the row, exactly like a counter booking — the
+            // person is carried by CustomerId, which is why that link exists.
+            PlayerId = perm.Venue.OwnerId,
+            CustomerId = perm.CustomerId,
+            PermanentBookingId = perm.Id,
+            Sport = perm.Sport ?? pitch.Sport,
+            PitchId = perm.PitchId,
+            PitchSize = perm.PitchSize,
+            Date = date,
+            StartTime = perm.StartTime,
+            Duration = perm.Duration,
+            Amount = total,
+            TotalAmount = total,
+            DepositAmount = 0,
+            SystemFeePercentage = 0,
+            SystemFee = 0,
+            OwnerAmount = total,
+            PaymentMethod = "cash",
+            IsManual = true,
+            Status = "confirmed",
+            DepositPaid = false,
+            AmountPaid = 0,
+            Notes = perm.Label,
+        };
+
+        _db.Bookings.Add(booking);
+        await _db.SaveChangesAsync();
+
+        var created = await _db.Bookings
+            .Include(b => b.Venue).Include(b => b.Player).Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstAsync(b => b.Id == booking.Id);
+
+        return Ok(new ApiResponse<RecordedOccurrenceDto>
+        {
+            Data = Recorded(created),
+            Message = "This week recorded — collect the money from the booking"
+        });
+    }
+
+    /// <summary>
+    /// The booking a recorded week produced, reduced to what the caller needs to jump to it.
+    /// Deliberately not the full BookingResponse: that lives on BookingsController as a
+    /// private instance method, and duplicating it here would be a second copy to drift.
+    /// </summary>
+    private static RecordedOccurrenceDto Recorded(Booking b) => new()
+    {
+        BookingId = b.Id,
+        Date = b.Date.ToString("yyyy-MM-dd"),
+        StartTime = b.StartTime ?? "",
+        Duration = b.Duration,
+        TotalAmount = b.TotalAmount,
+        AmountPaid = b.AmountPaid,
+        CustomerName = b.Customer?.Name,
+        Status = b.Status,
+    };
+
     // PATCH /api/v1/permanent-bookings/{id}/cancel
     [HttpPatch("api/v1/permanent-bookings/{id}/cancel")]
     public async Task<IActionResult> Cancel(string id)
     {
         var perm = await _db.PermanentBookings
             .Include(p => p.Venue)
+            .Include(p => p.Customer)
             .FirstOrDefaultAsync(p => p.Id == id);
         if (perm == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Permanent booking not found" });
 
-        if (!CanManageVenue(perm.Venue))
+        if (!CanWriteVenue(perm.Venue))
             return Forbid();
 
         if (perm.Status == "cancelled")
@@ -202,7 +339,30 @@ public class PermanentBookingsController : ControllerBase
 
     // ---- Helpers ----
 
-    private bool CanManageVenue(Venue venue) => VenueAccess.CanManage(venue, UserId, UserRole);
+    /// <summary>The venue_owner a staff caller works for. Null for every other role.</summary>
+    private string? StaffOwnerId => User.FindFirstValue("owner_id");
+
+    /// <summary>"read" | "write" for staff. Null otherwise.</summary>
+    private string? StaffPermissions => User.FindFirstValue("permissions");
+
+    /// <summary>
+    /// READ. Staff must be able to see standing reservations — this controller was still on
+    /// the old owner-only helper, so a counter clerk got a 403 here while the slot was
+    /// genuinely blocked. The schedule showed the hour free, the clerk promised it on the
+    /// phone, and the server only refused at save: after the customer had been told yes.
+    /// </summary>
+    private bool CanViewVenue(Venue venue) =>
+        VenueAccess.CanView(venue, UserId, UserRole, StaffOwnerId);
+
+    /// <summary>
+    /// WRITE. A standing booking blocks the same hour every week indefinitely — there is no
+    /// end date on the model — so it is a larger commitment than one booking. Still granted
+    /// to write-staff rather than owners only, because "same time next week" is exactly what
+    /// the person answering the phone is being asked for, and forcing them to call the owner
+    /// is how the feature stops being used.
+    /// </summary>
+    private bool CanWriteVenue(Venue venue) =>
+        VenueAccess.CanWrite(venue, UserId, UserRole, StaffOwnerId, StaffPermissions);
 
     /// <summary>Find the next date (today or later) whose DayOfWeek matches.</summary>
     private static DateTime NextDateForWeekday(int dow)
@@ -214,58 +374,31 @@ public class PermanentBookingsController : ControllerBase
 
     /// <summary>
     /// Validate that <c>start + duration</c> fits inside the pitch's (or venue's)
-    /// operating hours for the given anchor date. Mirrors the overnight-aware
-    /// rule used by <c>BookingsController.CreateBooking</c>: when the close time
-    /// is earlier than open, treat it as crossing midnight.
+    /// operating hours for the given anchor date.
+    ///
+    /// This used to carry its own copy of the resolve-and-compare logic — the only
+    /// copy that handled the overnight wrap, while its doc comment claimed to
+    /// mirror <c>BookingsController.CreateBooking</c>, which did not. The two also
+    /// disagreed on pitch-vs-venue precedence and on default open/close times.
+    /// Both now call <see cref="AvailabilityHelper.CheckSlotAgainstHours"/>, so
+    /// a permanent and a one-off booked into the same slot get the same answer.
     /// </summary>
     private static string? ValidateAgainstOperatingHours(
         Venue venue, PitchDto pitch, DateTime anchorDate, TimeSpan startTime, int durationMinutes)
     {
-        var dayShort = anchorDate.DayOfWeek.ToString().ToLower()[..3];
-        var dayFull = anchorDate.DayOfWeek.ToString().ToLower();
+        var dayName = anchorDate.DayOfWeek.ToString().ToLower();
+        var check = AvailabilityHelper.CheckSlotAgainstHours(
+            venue, pitch, dayName, startTime, durationMinutes);
 
-        Dictionary<string, object>? hoursMap = venue.OperatingHours;
-        if (pitch.OperatingHours is Dictionary<string, object> pitchHoursDict)
-            hoursMap = pitchHoursDict;
-        else if (pitch.OperatingHours != null)
+        return check.Verdict switch
         {
-            try
-            {
-                var json = JsonSerializer.Serialize(pitch.OperatingHours);
-                hoursMap = JsonSerializer.Deserialize<Dictionary<string, object>>(json) ?? venue.OperatingHours;
-            }
-            catch { /* fall through */ }
-        }
-
-        if (hoursMap == null) return null; // no hours configured → permissive
-
-        if (!hoursMap.TryGetValue(dayFull, out var dayHoursObj) &&
-            !hoursMap.TryGetValue(dayShort, out dayHoursObj))
-            return null;
-
-        var dayHoursJson = JsonSerializer.Serialize(dayHoursObj);
-        var dayHours = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dayHoursJson);
-        if (dayHours == null) return null;
-
-        if (dayHours.TryGetValue("closed", out var closedEl) && closedEl.ValueKind == JsonValueKind.True)
-            return "Venue is closed on that day";
-
-        string GetStr(string k, string fallback)
-            => dayHours.TryGetValue(k, out var el) && el.ValueKind == JsonValueKind.String
-                ? el.GetString() ?? fallback
-                : fallback;
-
-        if (!TimeSpan.TryParse(GetStr("open", "00:00"), out var openTime) ||
-            !TimeSpan.TryParse(GetStr("close", "23:59"), out var closeTime))
-            return null;
-
-        var endTime = startTime + TimeSpan.FromMinutes(durationMinutes);
-        // Overnight wrap: close <= open means the venue closes the following day.
-        if (closeTime <= openTime) closeTime += TimeSpan.FromHours(24);
-        // If the booking starts before open and would only fit by wrapping, reject.
-        if (startTime < openTime || endTime > closeTime)
-            return $"Booking must be within operating hours ({GetStr("open", "00:00")} - {GetStr("close", "23:59")})";
-        return null;
+            SlotHoursVerdict.Closed => "Venue is closed on that day",
+            SlotHoursVerdict.Misconfigured =>
+                "This venue's operating hours are misconfigured. Please contact the venue.",
+            SlotHoursVerdict.OutsideHours =>
+                $"Booking must be within operating hours ({check.Open} - {check.Close})",
+            _ => null
+        };
     }
 
     /// <summary>
@@ -375,6 +508,10 @@ public class PermanentBookingsController : ControllerBase
         Duration = p.Duration,
         Label = p.Label,
         LabelAr = p.LabelAr,
+        Customer = p.Customer == null ? null : new PermanentCustomerRef
+        {
+            Id = p.Customer.Id, Name = p.Customer.Name, Phone = p.Customer.Phone,
+        },
         Status = p.Status,
         CreatedByUserId = p.CreatedByUserId,
         CreatedAt = p.CreatedAt,

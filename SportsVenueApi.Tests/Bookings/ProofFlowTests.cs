@@ -43,6 +43,41 @@ public class ProofFlowTests
     private static Task<HttpResponseMessage> Upload(HttpClient client, string bookingId) =>
         client.PatchAsJsonAsync($"/api/v1/bookings/{bookingId}/upload-proof", new { paymentProof = ProofImage });
 
+    // ------------------------------------------------------------- what the proof may be
+    //
+    // The proof is arbitrary caller-supplied base64 that we store and later serve back to
+    // the owner. Until now anything at all was accepted and written to the row.
+
+    private static Task<HttpResponseMessage> UploadRaw(HttpClient client, string bookingId, string proof) =>
+        client.PatchAsJsonAsync($"/api/v1/bookings/{bookingId}/upload-proof", new { paymentProof = proof });
+
+    [Fact]
+    public async Task Upload_WithNonImageBytes_Returns400()
+    {
+        var (_, bookingId) = await CreatePendingBooking();
+        var client = _fx.CreateClientFor(_fx.PlayerId, "player");
+
+        // Valid base64, but the bytes are not any image format we accept.
+        var res = await UploadRaw(client, bookingId, "data:image/png;base64,SGVsbG8gd29ybGQh");
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        var row = await _fx.LoadBooking(bookingId);
+        Assert.Null(row!.PaymentProof);
+        Assert.Equal("pending_payment", row.Status);
+    }
+
+    [Fact]
+    public async Task Upload_WithInvalidBase64_Returns400()
+    {
+        var (_, bookingId) = await CreatePendingBooking();
+        var client = _fx.CreateClientFor(_fx.PlayerId, "player");
+
+        var res = await UploadRaw(client, bookingId, "data:image/png;base64,!!!not-base64!!!");
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Null((await _fx.LoadBooking(bookingId))!.PaymentProof);
+    }
+
     [Fact]
     public async Task Upload_ByNonOwningPlayer_Returns403()
     {

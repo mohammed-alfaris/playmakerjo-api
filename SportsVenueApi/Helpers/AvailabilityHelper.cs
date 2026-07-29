@@ -6,6 +6,42 @@ using SportsVenueApi.Models;
 
 namespace SportsVenueApi.Helpers;
 
+/// <summary>Why a day has no bookable window — or that it has one.</summary>
+public enum DayHoursStatus
+{
+    /// <summary>No operating-hours map at all. Nothing to enforce.</summary>
+    NotConfigured,
+    /// <summary>
+    /// A map exists but carries no entry for this weekday. NOT the same as closed:
+    /// the dashboard editor always writes all seven days, so a gap means the row
+    /// predates the editor or was created through the API — not that the owner
+    /// shut the day. Treating it as closed takes legacy venues offline entirely.
+    /// </summary>
+    DayNotListed,
+    /// <summary>The day carries an explicit <c>closed: true</c>. The owner meant it.</summary>
+    Closed,
+    /// <summary>A usable open/close window.</summary>
+    Open
+}
+
+/// <param name="Status">Which of the four cases this day falls into.</param>
+/// <param name="Window">Set only when <paramref name="Status"/> is <see cref="DayHoursStatus.Open"/>.</param>
+public readonly record struct DayHoursResult(DayHoursStatus Status, OperatingHoursInfo? Window);
+
+/// <summary>The outcome of testing one slot against a day's operating hours.</summary>
+public enum SlotHoursVerdict
+{
+    Allowed,
+    /// <summary>open/close present but unparseable — the venue's data is broken.</summary>
+    Misconfigured,
+    OutsideHours,
+    Closed
+}
+
+/// <param name="Open">Window start, for the caller's error message. Empty unless <paramref name="Verdict"/> is OutsideHours.</param>
+/// <param name="Close">Window end, likewise.</param>
+public readonly record struct SlotHoursCheck(SlotHoursVerdict Verdict, string Open, string Close);
+
 /// <summary>
 /// Shared availability primitives: operating-hours resolution, pitch matching
 /// for bookings/permanents, and the slot-capacity check used by the public
@@ -13,9 +49,15 @@ namespace SportsVenueApi.Helpers;
 /// </summary>
 public static class AvailabilityHelper
 {
-    public static OperatingHoursInfo? ResolveHoursForDay(Dictionary<string, object>? hoursMap, string dayName)
+    /// <summary>
+    /// Resolves one weekday out of an operating-hours map, keeping the three
+    /// distinct reasons a day can yield no window apart. <see cref="ResolveHoursForDay"/>
+    /// collapses them all to null, which is what let a venue whose map simply
+    /// omitted a weekday be reported as closed on that day forever.
+    /// </summary>
+    public static DayHoursResult ResolveDayHours(Dictionary<string, object>? hoursMap, string dayName)
     {
-        if (hoursMap == null) return null;
+        if (hoursMap == null) return new(DayHoursStatus.NotConfigured, null);
 
         // The dashboard writes keys as full day names ("monday", "tuesday", ...)
         // while older seed data used 3-letter abbreviations ("mon", "tue", ...).
@@ -24,29 +66,105 @@ public static class AvailabilityHelper
         var dayShort = dayFull.Length >= 3 ? dayFull[..3] : dayFull;
         if (!hoursMap.TryGetValue(dayFull, out var dayHoursObj)
             && !hoursMap.TryGetValue(dayShort, out dayHoursObj))
-            return null;
+            return new(DayHoursStatus.DayNotListed, null);
 
         var dayHoursJson = JsonSerializer.Serialize(dayHoursObj);
         var dayHours = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dayHoursJson);
-        if (dayHours == null) return null;
+        if (dayHours == null) return new(DayHoursStatus.DayNotListed, null);
 
-        // Honour the "closed: true" flag written by the dashboard editor — if
-        // the day is marked closed there is no open/close window for it.
+        // Honour the "closed: true" flag written by the dashboard editor.
         if (dayHours.TryGetValue("closed", out var closedEl)
             && closedEl.ValueKind == JsonValueKind.True)
-            return null;
+            return new(DayHoursStatus.Closed, null);
 
         string GetStr(string k, string fallback)
             => dayHours.TryGetValue(k, out var el) && el.ValueKind == JsonValueKind.String
                 ? el.GetString() ?? fallback
                 : fallback;
 
-        return new OperatingHoursInfo
+        return new(DayHoursStatus.Open, new OperatingHoursInfo
         {
             Open = GetStr("open", "08:00"),
             Close = GetStr("close", "22:00")
+        });
+    }
+
+    /// <summary>
+    /// Pitch hours override the venue's for a day when the pitch actually offers a
+    /// window for it. An explicit <c>closed</c> on the pitch stands rather than
+    /// falling through to the venue — otherwise a pitch could never be shut on a
+    /// day the venue is open.
+    /// </summary>
+    public static DayHoursResult ResolveEffectiveDayHours(Venue venue, PitchDto pitch, string dayName)
+    {
+        var venueResult = ResolveDayHours(venue.OperatingHours, dayName);
+        if (pitch.OperatingHours == null) return venueResult;
+
+        DayHoursResult pitchResult;
+        try
+        {
+            var json = JsonSerializer.Serialize(pitch.OperatingHours);
+            var map = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            if (map == null) return venueResult;
+            pitchResult = ResolveDayHours(map, dayName);
+        }
+        catch
+        {
+            return venueResult;
+        }
+
+        return pitchResult.Status switch
+        {
+            DayHoursStatus.Open => pitchResult,
+            DayHoursStatus.Closed => pitchResult,
+            _ => venueResult
         };
     }
+
+    /// <summary>
+    /// Does [start, start+duration) sit inside the pitch's window for this day?
+    ///
+    /// A close at or before the open means the venue shuts the FOLLOWING day —
+    /// 18:00–02:00 is a normal evening pitch schedule here, not an empty window.
+    /// Extending the window by 24h is the whole reason this lives in one place:
+    /// the check used to be written out at four call sites and only one of them
+    /// wrapped, so overnight venues were bookable through the permanent-booking
+    /// screen and rejected everywhere else.
+    /// </summary>
+    public static SlotHoursCheck CheckSlotAgainstHours(
+        Venue venue, PitchDto pitch, string dayName, TimeSpan start, int durationMinutes)
+    {
+        var resolved = ResolveEffectiveDayHours(venue, pitch, dayName);
+
+        switch (resolved.Status)
+        {
+            case DayHoursStatus.Closed:
+                return new(SlotHoursVerdict.Closed, "", "");
+            case DayHoursStatus.NotConfigured:
+            case DayHoursStatus.DayNotListed:
+                return new(SlotHoursVerdict.Allowed, "", "");
+        }
+
+        var window = resolved.Window!;
+        if (!TimeSpan.TryParse(window.Open, out var open) || !TimeSpan.TryParse(window.Close, out var close))
+            return new(SlotHoursVerdict.Misconfigured, window.Open, window.Close);
+
+        if (close <= open) close += TimeSpan.FromHours(24);
+
+        var end = start + TimeSpan.FromMinutes(durationMinutes);
+        if (start < open || end > close)
+            return new(SlotHoursVerdict.OutsideHours, window.Open, window.Close);
+
+        return new(SlotHoursVerdict.Allowed, window.Open, window.Close);
+    }
+
+    /// <summary>
+    /// Legacy shape kept for the read-only display paths in VenuesController, which
+    /// only ever echo a window into a response and do not care why one is absent.
+    /// New enforcement code should use <see cref="ResolveDayHours"/>.
+    /// </summary>
+    public static OperatingHoursInfo? ResolveHoursForDay(Dictionary<string, object>? hoursMap, string dayName)
+        => ResolveDayHours(hoursMap, dayName).Window;
 
     public static OperatingHoursInfo? ResolvePitchHours(PitchDto pitch, string dayName, OperatingHoursInfo? fallback)
     {
@@ -106,22 +224,12 @@ public static class AvailabilityHelper
         Venue venue, PitchDto pitch, TimeSpan start, int duration, string dayName,
         List<Booking> dayBookings, List<PermanentBooking> dayPermanents)
     {
-        var venueHours = ResolveHoursForDay(venue.OperatingHours, dayName);
-        var hours = ResolvePitchHours(pitch, dayName, venueHours);
-        var end = start + TimeSpan.FromMinutes(duration);
-
-        if (hours != null)
-        {
-            if (!TimeSpan.TryParse(hours.Open, out var open) || !TimeSpan.TryParse(hours.Close, out var close))
-                return false;
-            if (start < open || end > close)
-                return false;
-        }
-        else if (venue.OperatingHours is { Count: > 0 } || pitch.OperatingHours != null)
-        {
-            // Hours are configured but the day resolves to nothing — closed.
+        // Same verdict the booking endpoints use, so the availability grid and the
+        // create call can no longer disagree about whether a slot is offerable.
+        if (CheckSlotAgainstHours(venue, pitch, dayName, start, duration).Verdict != SlotHoursVerdict.Allowed)
             return false;
-        }
+
+        var end = start + TimeSpan.FromMinutes(duration);
 
         var overlapping = dayBookings
             .Where(b => MatchesPitch(b, venue, pitch))

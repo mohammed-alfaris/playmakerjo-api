@@ -28,6 +28,10 @@ public class UserResponse
     [JsonPropertyName("permissions")]
     public string? Permissions { get; set; }
 
+    /// <summary>The venue_owner a staff account works for. Null for every other role.</summary>
+    [JsonPropertyName("managedByOwnerId")]
+    public string? ManagedByOwnerId { get; set; }
+
     [JsonPropertyName("createdAt")]
     public string CreatedAt { get; set; } = "";
 }
@@ -51,6 +55,20 @@ public class CreateUserRequest
 
     [JsonPropertyName("permissions")]
     public string? Permissions { get; set; }
+
+    /// <summary>
+    /// Required when a super_admin creates a venue_staff account. Ignored when an owner
+    /// creates staff — they always get themselves, so an owner cannot plant staff inside
+    /// a competitor's account.
+    /// </summary>
+    [JsonPropertyName("managedByOwnerId")]
+    public string? ManagedByOwnerId { get; set; }
+}
+
+public class PermissionsUpdateRequest
+{
+    [JsonPropertyName("permissions")]
+    public string Permissions { get; set; } = "";
 }
 
 public class ChangePasswordRequest
@@ -66,6 +84,23 @@ public class StatusUpdateRequest
 {
     [JsonPropertyName("status")]
     public string Status { get; set; } = "";
+}
+
+/// <summary>
+/// Returned once, by POST /users/{userId}/reset-password. The plaintext exists only in this
+/// response — it is bcrypt-hashed before the row is saved and is never logged, so if the
+/// admin loses it the only remedy is another reset.
+/// </summary>
+public class ResetPasswordResponse
+{
+    [JsonPropertyName("userId")]
+    public string UserId { get; set; } = "";
+
+    [JsonPropertyName("email")]
+    public string Email { get; set; } = "";
+
+    [JsonPropertyName("temporaryPassword")]
+    public string TemporaryPassword { get; set; } = "";
 }
 
 public class RoleUpdateRequest

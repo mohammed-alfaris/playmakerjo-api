@@ -59,5 +59,11 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         // reject regular suite traffic.
         builder.UseSetting("RateLimiting:Uploads:PermitLimit", "100000");
         builder.UseSetting("RateLimiting:BookingCreate:PermitLimit", "100000");
+        // The auth policy covers /auth/refresh as well as /auth/login, and every test shares
+        // one IP. At the production limit of 5/min, a few session-revocation tests exhaust the
+        // window and the failure lands on whichever file runs next — PayerAccessTests, which
+        // has nothing to do with them. Raised here so rate limiting is tested deliberately
+        // (see RateLimiting/) rather than by accident, everywhere, in run order.
+        builder.UseSetting("RateLimiting:Auth:PermitLimit", "100000");
     }
 }

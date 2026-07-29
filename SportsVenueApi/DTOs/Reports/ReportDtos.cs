@@ -25,17 +25,24 @@ public class SummaryResponse
     [JsonPropertyName("totalUsers")]
     public int TotalUsers { get; set; }
 
+    // Period-over-period deltas. Nullable, and currently ALWAYS null.
+    //
+    // These used to be hardcoded — 12.4, 8.1, 14.3, 5.0 — and rendered as real
+    // percentages on the dashboard of a product that handles real money. A fabricated
+    // growth figure shown to a paying customer is the same class of defect as a
+    // verification badge that always passes: it manufactures confidence out of nothing.
+    // Null renders as "—" until they are genuinely computed.
     [JsonPropertyName("revenueChange")]
-    public double RevenueChange { get; set; }
+    public double? RevenueChange { get; set; }
 
     [JsonPropertyName("bookingsChange")]
-    public double BookingsChange { get; set; }
+    public double? BookingsChange { get; set; }
 
     [JsonPropertyName("venuesChange")]
-    public double VenuesChange { get; set; }
+    public double? VenuesChange { get; set; }
 
     [JsonPropertyName("usersChange")]
-    public double UsersChange { get; set; }
+    public double? UsersChange { get; set; }
 
     /// <summary>
     /// Last 14 days of daily values for each metric, oldest → newest.
