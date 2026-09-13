@@ -7,6 +7,7 @@ using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Bookings;
+using SportsVenueApi.DTOs.VenueFeatures;
 using SportsVenueApi.DTOs.Venues;
 using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
@@ -57,16 +58,20 @@ public class VenuesController : ControllerBase
     /// serve this shape today and the fourth that gets added next year will be safe by
     /// default — the leak happened because a route forgot, not because anyone decided.
     /// </summary>
-    private VenueResponse ToPublicDto(Venue v)
+    private VenueResponse ToPublicDto(Venue v, IReadOnlyDictionary<string, VenueFeature> catalog)
     {
-        var dto = ToDto(v);
+        var dto = ToDto(v, catalog);
         // Verified by removal: commenting this single line fails five of the seven
         // VenueDetailLeakTests, including the anonymous ones.
         dto.CliqAlias = null;
         return dto;
     }
 
-    private VenueResponse ToDto(Venue v) => new()
+    /// <param name="catalog">
+    /// Every catalog feature keyed by id, from <see cref="LoadFeatureCatalogAsync"/>. Required rather
+    /// than looked up inside, so a new route cannot quietly return venues with no features.
+    /// </param>
+    private VenueResponse ToDto(Venue v, IReadOnlyDictionary<string, VenueFeature> catalog) => new()
     {
         Id = v.Id,
         Name = v.Name,
@@ -94,8 +99,46 @@ public class VenuesController : ControllerBase
         SizePrices = v.SizePrices,
         SportsConfig = v.SportsConfig,
         Pitches = PitchSizes.ResolvedPitches(v),
+        Features = ResolveFeatures(v, catalog),
+        CustomFeatures = v.CustomFeatures,
         CreatedAt = v.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
     };
+
+    /// <summary>
+    /// The whole catalog, retired features included: a venue that chose a feature before it was
+    /// retired keeps showing it. One small query per request.
+    /// </summary>
+    private Task<Dictionary<string, VenueFeature>> LoadFeatureCatalogAsync() =>
+        _db.VenueFeatures.AsNoTracking().ToDictionaryAsync(f => f.Id);
+
+    /// <summary>
+    /// A venue's stored ids as name + icon, in catalog order. An id with no catalog row — only
+    /// possible if the row was removed by hand, since the API refuses to delete a feature in
+    /// use — is dropped rather than shown as a bare id.
+    /// </summary>
+    private static List<VenueFeatureRef> ResolveFeatures(Venue v, IReadOnlyDictionary<string, VenueFeature> catalog) =>
+        v.FeatureIds
+            .Select(id => catalog.GetValueOrDefault(id))
+            .OfType<VenueFeature>()
+            .OrderBy(f => f.SortOrder)
+            .ThenBy(f => f.NameEn)
+            .Select(f => new VenueFeatureRef { Id = f.Id, Name = f.NameEn, NameAr = f.NameAr, Icon = f.Icon })
+            .ToList();
+
+    /// <summary>
+    /// Narrow to venues offering EVERY listed feature — the same substring match the sport filter
+    /// uses on its JSON column, one condition per feature. Ids must already have passed
+    /// VenueFeatureRules.ParseFilter, which is what keeps LIKE wildcards out of the pattern.
+    /// </summary>
+    private static IQueryable<Venue> WithFeatures(IQueryable<Venue> query, IEnumerable<string> featureIds)
+    {
+        foreach (var id in featureIds)
+        {
+            var token = $"\"{id}\"";
+            query = query.Where(v => v.FeatureIdsJson.Contains(token));
+        }
+        return query;
+    }
 
     /// <summary>
     /// Validate + normalize a list of pitches for a venue: mint UUIDs for new pitches,
@@ -236,9 +279,14 @@ public class VenuesController : ControllerBase
         [FromQuery] int limit = 20,
         [FromQuery] string? search = null,
         [FromQuery] string? sport = null,
-        [FromQuery] string? city = null)
+        [FromQuery] string? city = null,
+        [FromQuery] string? features = null)
     {
-        var baseQuery = _db.Venues.Where(v => v.Status == "active");
+        var featureErr = VenueFeatureRules.ParseFilter(features, out var featureIds);
+        if (featureErr != null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = featureErr });
+
+        var baseQuery = WithFeatures(_db.Venues.Where(v => v.Status == "active"), featureIds);
 
         if (!string.IsNullOrEmpty(search))
             baseQuery = baseQuery.Where(v => EF.Functions.Like(v.Name, $"%{search}%")
@@ -259,7 +307,8 @@ public class VenuesController : ControllerBase
             .Take(limit)
             .ToListAsync();
 
-        var dtos = venues.Select(ToPublicDto).ToList();
+        var catalog = await LoadFeatureCatalogAsync();
+        var dtos = venues.Select(v => ToPublicDto(v, catalog)).ToList();
         await StampAggregatesAsync(dtos);
 
         return Ok(new ApiResponse<List<VenueResponse>>
@@ -280,7 +329,7 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        var dto = ToPublicDto(venue);
+        var dto = ToPublicDto(venue, await LoadFeatureCatalogAsync());
         await StampAggregateAsync(dto);
         return Ok(new ApiResponse<VenueResponse> { Data = dto });
     }
@@ -297,6 +346,7 @@ public class VenuesController : ControllerBase
         [FromQuery] int duration = 60,
         [FromQuery] string? sport = null,
         [FromQuery] string? city = null,
+        [FromQuery] string? features = null,
         [FromQuery] int page = 1,
         [FromQuery] int limit = 20)
     {
@@ -313,7 +363,11 @@ public class VenuesController : ControllerBase
         if (limit < 1) limit = 20;
         if (limit > 50) limit = 50;
 
-        var baseQuery = _db.Venues.Where(v => v.Status == "active");
+        var featureErr = VenueFeatureRules.ParseFilter(features, out var featureIds);
+        if (featureErr != null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = featureErr });
+
+        var baseQuery = WithFeatures(_db.Venues.Where(v => v.Status == "active"), featureIds);
 
         if (!string.IsNullOrEmpty(sport))
             baseQuery = baseQuery.Where(v => v.SportsJson.Contains($"\"{sport}\""));
@@ -352,10 +406,11 @@ public class VenuesController : ControllerBase
         }).ToList();
 
         var total = available.Count;
+        var catalog = await LoadFeatureCatalogAsync();
         var dtos = available
             .Skip((page - 1) * limit)
             .Take(limit)
-            .Select(ToPublicDto)
+            .Select(v => ToPublicDto(v, catalog))
             .ToList();
         await StampAggregatesAsync(dtos);
 
@@ -416,7 +471,8 @@ public class VenuesController : ControllerBase
             .Take(limit)
             .ToListAsync();
 
-        var dtos = venues.Select(ToDto).ToList();
+        var catalog = await LoadFeatureCatalogAsync();
+        var dtos = venues.Select(v => ToDto(v, catalog)).ToList();
         await StampAggregatesAsync(dtos);
 
         return Ok(new ApiResponse<List<VenueResponse>>
@@ -484,6 +540,11 @@ public class VenuesController : ControllerBase
         if (pitchErr != null)
             return BadRequest(new ApiResponse<object> { Success = false, Message = pitchErr });
 
+        var catalog = await LoadFeatureCatalogAsync();
+        var chosen = VenueFeatureRules.Normalize(req.FeatureIds, req.CustomFeatures, catalog, alreadyAttached: []);
+        if (chosen.Error != null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = chosen.Error });
+
         var venue = new Venue
         {
             Name = req.Name,
@@ -504,7 +565,9 @@ public class VenuesController : ControllerBase
             CliqAlias = req.CliqAlias,
             ParentSize = req.ParentSize,
             SubSizes = req.SubSizes ?? [],
-            SizePrices = req.SizePrices ?? []
+            SizePrices = req.SizePrices ?? [],
+            FeatureIds = chosen.FeatureIds,
+            CustomFeatures = chosen.CustomFeatures
         };
         if (req.OperatingHours != null)
             venue.OperatingHoursJson = JsonSerializer.Serialize(req.OperatingHours);
@@ -525,7 +588,7 @@ public class VenuesController : ControllerBase
         // Reload with owner
         var created = await _db.Venues.Include(v => v.Owner).FirstAsync(v => v.Id == venue.Id);
 
-        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(created), Message = "Venue created" });
+        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(created, catalog), Message = "Venue created" });
     }
 
     [HttpGet("{venueId}")]
@@ -539,9 +602,10 @@ public class VenuesController : ControllerBase
         // What changes is WHICH shape they get. This route had no ownership check at all,
         // so any logged-in account — including a competing venue owner — could read another
         // venue's CliQ alias by id, and ids are enumerable from the public list.
+        var catalog = await LoadFeatureCatalogAsync();
         var dto = VenueAccess.CanView(venue, UserId, UserRole, StaffOwnerId)
-            ? ToDto(venue)
-            : ToPublicDto(venue);
+            ? ToDto(venue, catalog)
+            : ToPublicDto(venue, catalog);
 
         await StampAggregateAsync(dto);
         return Ok(new ApiResponse<VenueResponse> { Data = dto });
@@ -584,6 +648,24 @@ public class VenuesController : ControllerBase
         if (req.MinBookingDuration.HasValue) venue.MinBookingDuration = req.MinBookingDuration.Value;
         if (req.MaxBookingDuration.HasValue) venue.MaxBookingDuration = req.MaxBookingDuration.Value;
         if (req.DepositPercentage.HasValue) venue.DepositPercentage = req.DepositPercentage.Value;
+
+        // Either list may be sent alone. The other keeps its stored value, and a typed label
+        // that matches the catalog still lands in FeatureIds — so both are always rewritten.
+        var catalog = await LoadFeatureCatalogAsync();
+        if (req.FeatureIds != null || req.CustomFeatures != null)
+        {
+            var existingIds = venue.FeatureIds;
+            var chosen = VenueFeatureRules.Normalize(
+                req.FeatureIds ?? existingIds,
+                req.CustomFeatures ?? venue.CustomFeatures,
+                catalog,
+                alreadyAttached: existingIds);
+            if (chosen.Error != null)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = chosen.Error });
+
+            venue.FeatureIds = chosen.FeatureIds;
+            venue.CustomFeatures = chosen.CustomFeatures;
+        }
 
         // Pitch-size fields — validate together if any of them is being updated
         if (req.ParentSize != null || req.SubSizes != null || req.SizePrices != null)
@@ -707,7 +789,7 @@ public class VenuesController : ControllerBase
         if (req.OwnerId != null)
             await _db.Entry(venue).Reference(v => v.Owner).LoadAsync();
 
-        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(venue), Message = "Venue updated" });
+        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(venue, catalog), Message = "Venue updated" });
     }
 
     [HttpDelete("{venueId}")]

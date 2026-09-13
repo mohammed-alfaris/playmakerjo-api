@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using SportsVenueApi.DTOs.VenueFeatures;
 
 namespace SportsVenueApi.DTOs.Venues;
 
@@ -154,6 +155,14 @@ public class VenueResponse
     [JsonPropertyName("pitches")]
     public List<PitchDto> Pitches { get; set; } = [];
 
+    /// <summary>Catalog features, resolved to name and icon, in catalog order.</summary>
+    [JsonPropertyName("features")]
+    public List<VenueFeatureRef> Features { get; set; } = [];
+
+    /// <summary>Owner-typed features, exactly as typed. No icon, and not filterable.</summary>
+    [JsonPropertyName("customFeatures")]
+    public List<string> CustomFeatures { get; set; } = [];
+
     [JsonPropertyName("createdAt")]
     public string CreatedAt { get; set; } = "";
 
@@ -240,6 +249,14 @@ public class VenueCreateRequest
 
     [JsonPropertyName("pitches")]
     public List<PitchDto>? Pitches { get; set; }
+
+    /// <summary>Catalog feature ids. Omit to leave the venue's features unchanged on update.</summary>
+    [JsonPropertyName("featureIds")]
+    public List<string>? FeatureIds { get; set; }
+
+    /// <summary>Owner-typed labels. A label matching a catalog name is stored as that feature.</summary>
+    [JsonPropertyName("customFeatures")]
+    public List<string>? CustomFeatures { get; set; }
 }
 
 public class VenueUpdateRequest
@@ -318,6 +335,14 @@ public class VenueUpdateRequest
 
     [JsonPropertyName("pitches")]
     public List<PitchDto>? Pitches { get; set; }
+
+    /// <summary>Catalog feature ids. Omit to leave the venue's features unchanged on update.</summary>
+    [JsonPropertyName("featureIds")]
+    public List<string>? FeatureIds { get; set; }
+
+    /// <summary>Owner-typed labels. A label matching a catalog name is stored as that feature.</summary>
+    [JsonPropertyName("customFeatures")]
+    public List<string>? CustomFeatures { get; set; }
 }
 
 public class VenueStatsResponse

@@ -121,6 +121,14 @@ public class Venue
     [Column("pitches", TypeName = "longtext")]
     public string PitchesJson { get; set; } = "[]";
 
+    /// <summary>Ids of the catalog features this venue offers. See <see cref="VenueFeature"/>.</summary>
+    [Column("feature_ids", TypeName = "longtext")]
+    public string FeatureIdsJson { get; set; } = "[]";
+
+    /// <summary>Features the owner typed that are not in the catalog. Private to this venue.</summary>
+    [Column("custom_features", TypeName = "longtext")]
+    public string CustomFeaturesJson { get; set; } = "[]";
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
@@ -132,6 +140,26 @@ public class Venue
     {
         get => System.Text.Json.JsonSerializer.Deserialize<List<string>>(SportsJson) ?? [];
         set => SportsJson = System.Text.Json.JsonSerializer.Serialize(value);
+    }
+
+    // Like every JSON accessor here, these build a new list on each read: assign the list
+    // back after changing it, or the change is lost.
+    [NotMapped]
+    public List<string> FeatureIds
+    {
+        get => string.IsNullOrWhiteSpace(FeatureIdsJson)
+            ? []
+            : System.Text.Json.JsonSerializer.Deserialize<List<string>>(FeatureIdsJson) ?? [];
+        set => FeatureIdsJson = System.Text.Json.JsonSerializer.Serialize(value ?? []);
+    }
+
+    [NotMapped]
+    public List<string> CustomFeatures
+    {
+        get => string.IsNullOrWhiteSpace(CustomFeaturesJson)
+            ? []
+            : System.Text.Json.JsonSerializer.Deserialize<List<string>>(CustomFeaturesJson) ?? [];
+        set => CustomFeaturesJson = System.Text.Json.JsonSerializer.Serialize(value ?? []);
     }
 
     [NotMapped]

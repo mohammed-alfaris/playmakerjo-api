@@ -22,6 +22,7 @@ public class AppDbContext : DbContext
     public DbSet<PlayerWaitlist> PlayerWaitlist => Set<PlayerWaitlist>();
     public DbSet<VenueWaitlist> VenueWaitlist => Set<VenueWaitlist>();
     public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<VenueFeature> VenueFeatures => Set<VenueFeature>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -132,6 +133,15 @@ public class AppDbContext : DbContext
 
             // The owner's ledger read: their venues, newest first.
             e.HasIndex(p => new { p.VenueId, p.Date });
+        });
+
+        modelBuilder.Entity<VenueFeature>(e =>
+        {
+            // One catalog entry per name, in each language. The column collation is
+            // case-insensitive, so this also refuses "Parking" beside "parking" — which is
+            // exactly the duplicate an admin typing quickly would otherwise create.
+            e.HasIndex(f => f.NameEn).IsUnique();
+            e.HasIndex(f => f.NameAr).IsUnique();
         });
 
         modelBuilder.Entity<Notification>(e =>

@@ -31,6 +31,9 @@ public class VenueSearchTests
         return url;
     }
 
+    private static string PublicListUrl(string city, string features) =>
+        $"/api/v1/venues/public?city={city}&features={Uri.EscapeDataString(features)}&limit=100";
+
     private async Task<List<VenueResponse>> Search(HttpClient client, string url)
     {
         var res = await client.GetAsync(url);
@@ -118,6 +121,80 @@ public class VenueSearchTests
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         var body = await res.Content.ReadFromJsonAsync<ApiResponse<object>>();
         Assert.Contains("date", body!.Message);
+    }
+
+    // ---------------------------------------------------------- filtering by feature
+    //
+    // A player ticks "parking" and "showers" and expects venues offering BOTH. Each listed id
+    // adds its own condition, so a venue with only one of them must drop out.
+
+    [Fact]
+    public async Task FeatureFilter_RequiresEveryListedFeature_OnTheVenueList()
+    {
+        var city = UniqueCity;
+        var both = await _fx.CreateBasketballVenue(_fx.OwnerAId, v => { v.City = city; v.FeatureIds = ["vf-parking", "vf-showers"]; });
+        var parkingOnly = await _fx.CreateBasketballVenue(_fx.OwnerAId, v => { v.City = city; v.FeatureIds = ["vf-parking"]; });
+        var neither = await _fx.CreateBasketballVenue(_fx.OwnerAId, v => v.City = city);
+        var client = _fx.Factory.CreateClient();
+
+        var twoFeatures = await Search(client, PublicListUrl(city, "vf-parking,vf-showers"));
+        Assert.Equal([both.Id], twoFeatures.Select(v => v.Id));
+
+        var oneFeature = (await Search(client, PublicListUrl(city, "vf-parking"))).Select(v => v.Id).ToList();
+        Assert.Contains(both.Id, oneFeature);
+        Assert.Contains(parkingOnly.Id, oneFeature);
+        Assert.DoesNotContain(neither.Id, oneFeature);
+    }
+
+    [Fact]
+    public async Task FeatureFilter_RequiresEveryListedFeature_OnAvailabilitySearch()
+    {
+        var city = UniqueCity;
+        var both = await _fx.CreateBasketballVenue(_fx.OwnerAId, v => { v.City = city; v.FeatureIds = ["vf-parking", "vf-showers"]; });
+        await _fx.CreateBasketballVenue(_fx.OwnerAId, v => { v.City = city; v.FeatureIds = ["vf-parking"]; });
+
+        var client = _fx.Factory.CreateClient();
+        var url = SearchUrl(FutureDate.ToString("yyyy-MM-dd"), "09:00", city: city) + "&features=vf-parking,vf-showers";
+
+        Assert.Equal([both.Id], (await Search(client, url)).Select(v => v.Id));
+    }
+
+    [Fact]
+    public async Task FeatureFilter_IgnoresTypedLabels()
+    {
+        // Typed features are free text on one venue; they are shown, never filtered on.
+        var city = UniqueCity;
+        await _fx.CreateBasketballVenue(_fx.OwnerAId, v => { v.City = city; v.CustomFeatures = ["Parking round the back"]; });
+        var client = _fx.Factory.CreateClient();
+
+        Assert.Empty(await Search(client, PublicListUrl(city, "vf-parking")));
+    }
+
+    [Fact]
+    public async Task FeatureFilter_WithAWellFormedUnknownId_MatchesNothing()
+    {
+        var city = UniqueCity;
+        await _fx.CreateBasketballVenue(_fx.OwnerAId, v => { v.City = city; v.FeatureIds = ["vf-parking"]; });
+        var client = _fx.Factory.CreateClient();
+
+        Assert.Empty(await Search(client, PublicListUrl(city, "vf-helipad")));
+    }
+
+    [Theory]
+    [InlineData("%")]                 // a LIKE wildcard: would otherwise match every venue
+    [InlineData("vf_parking")]        // "_" is the other LIKE wildcard
+    [InlineData("vf-parking\"")]     // a quote could break out of the JSON token
+    [InlineData("VF-PARKING")]        // ids are lowercase slugs
+    public async Task FeatureFilter_RejectsMalformedIds(string badId)
+    {
+        var client = _fx.Factory.CreateClient();
+
+        var list = await client.GetAsync(PublicListUrl("Amman", badId));
+        Assert.Equal(HttpStatusCode.BadRequest, list.StatusCode);
+
+        var search = await client.GetAsync(
+            SearchUrl(FutureDate.ToString("yyyy-MM-dd"), "09:00") + "&features=" + Uri.EscapeDataString(badId));
+        Assert.Equal(HttpStatusCode.BadRequest, search.StatusCode);
     }
 
     [Fact]
