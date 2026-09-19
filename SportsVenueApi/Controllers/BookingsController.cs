@@ -26,6 +26,7 @@ public class BookingsController : ControllerBase
     private readonly ILogger<BookingsController> _logger;
     private readonly ExpiryPolicy _expiry;
     private readonly string _uploadsBaseUrl;
+    private readonly string _contentRoot;
 
     public BookingsController(
         AppDbContext db,
@@ -33,7 +34,8 @@ public class BookingsController : ControllerBase
         SettingsService settings,
         ILogger<BookingsController> logger,
         ExpiryPolicy expiry,
-        IConfiguration config)
+        IConfiguration config,
+        IWebHostEnvironment env)
     {
         _db = db;
         _notifications = notifications;
@@ -41,6 +43,7 @@ public class BookingsController : ControllerBase
         _logger = logger;
         _expiry = expiry;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
+        _contentRoot = env.ContentRootPath;
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -978,20 +981,37 @@ public class BookingsController : ControllerBase
         if (string.IsNullOrEmpty(req.PaymentProof))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof image is required" });
 
-        // Proof is a base64 image we persist and later serve back to the owner —
-        // validate it's real base64, size-capped, and an actual image (not arbitrary
-        // bytes) before storing.
-        var proofData = req.PaymentProof;
-        var commaIdx = proofData.IndexOf(',');
-        if (proofData.StartsWith("data:") && commaIdx >= 0)
-            proofData = proofData[(commaIdx + 1)..];
-        byte[] proofBytes;
-        try { proofBytes = Convert.FromBase64String(proofData); }
-        catch (FormatException) { return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof is not valid base64" }); }
-        if (proofBytes.Length > 5 * 1024 * 1024)
-            return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof image is too large (max 5MB)" });
-        if (!ImageBytes.HasAllowedSignature(proofBytes))
-            return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof is not a valid image" });
+        // Two shapes arrive here. The app uploads the screenshot through POST /uploads first
+        // and sends back the URL it was given — that is how every real proof arrives. Only a
+        // URL naming a file actually in our proofs folder is accepted: that file already
+        // passed the upload endpoint's size, extension and image-byte checks.
+        //
+        // Anything else is treated as inline base64 image data, which we persist and later
+        // serve back to the owner — so it must be real base64, size-capped, and actual image
+        // bytes, not arbitrary content.
+        if (ProofUpload.IsUploadReference(req.PaymentProof))
+        {
+            if (!ProofUpload.IsStoredProof(req.PaymentProof, _contentRoot))
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "Payment proof must be an image uploaded through the app."
+                });
+        }
+        else
+        {
+            var proofData = req.PaymentProof;
+            var commaIdx = proofData.IndexOf(',');
+            if (proofData.StartsWith("data:") && commaIdx >= 0)
+                proofData = proofData[(commaIdx + 1)..];
+            byte[] proofBytes;
+            try { proofBytes = Convert.FromBase64String(proofData); }
+            catch (FormatException) { return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof is not valid base64" }); }
+            if (proofBytes.Length > 5 * 1024 * 1024)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof image is too large (max 5MB)" });
+            if (!ImageBytes.HasAllowedSignature(proofBytes))
+                return BadRequest(new ApiResponse<object> { Success = false, Message = "Payment proof is not a valid image" });
+        }
 
         booking.PaymentProof = req.PaymentProof;
         booking.PaymentProofStatus = "pending_review";
