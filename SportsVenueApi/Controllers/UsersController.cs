@@ -5,8 +5,11 @@ using Microsoft.EntityFrameworkCore;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Auth;
+using SportsVenueApi.DTOs.Staff;
 using SportsVenueApi.DTOs.Users;
 using SportsVenueApi.Helpers;
+using SportsVenueApi.Models;
+using SportsVenueApi.Services;
 using BCrypt.Net;
 
 namespace SportsVenueApi.Controllers;
@@ -19,11 +22,17 @@ public class UsersController : ControllerBase
     private readonly AppDbContext _db;
     private readonly string _uploadsBaseUrl;
     private readonly ILogger<UsersController> _logger;
+    private readonly AccessContext _access;
+    private readonly CompanyService _companies;
 
-    public UsersController(AppDbContext db, IConfiguration config, ILogger<UsersController> logger)
+    public UsersController(
+        AppDbContext db, IConfiguration config, ILogger<UsersController> logger,
+        AccessContext access, CompanyService companies)
     {
         _db = db;
         _logger = logger;
+        _access = access;
+        _companies = companies;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
     }
 
@@ -41,17 +50,89 @@ public class UsersController : ControllerBase
         Avatar = UploadUrlHelper.Normalize(u.Avatar, _uploadsBaseUrl),
         Permissions = u.Permissions,
         ManagedByOwnerId = u.ManagedByOwnerId,
+        StaffRole = u.Role == "venue_staff" && u.StaffRole != null
+            ? new StaffRoleRef { Id = u.StaffRole.Id, Name = u.StaffRole.Name }
+            : null,
+        AllVenues = u.Role == "venue_staff" ? u.StaffAllVenues : null,
+        VenueIds = u.Role == "venue_staff" && !u.StaffAllVenues ? u.StaffVenueIds : null,
         CreatedAt = u.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
     };
+
+    /// <summary>
+    /// Set a staff member's role and venue scope, checking both belong to their company.
+    /// Returns an error message, or null when applied. Does not save.
+    ///
+    /// A role or venue from another company is refused rather than ignored: silently dropping
+    /// it would leave the clerk with less access than the owner just granted, and no sign why.
+    /// </summary>
+    private async Task<string?> ApplyStaffAssignmentAsync(
+        User staff, string companyId, string? roleId, bool? allVenues, List<string>? venueIds,
+        bool isNew, string? legacyLevel)
+    {
+        if (!string.IsNullOrWhiteSpace(roleId))
+        {
+            var role = await _db.StaffRoles.FirstOrDefaultAsync(r => r.Id == roleId && r.OwnerId == companyId);
+            if (role == null) return "That role does not exist.";
+            staff.StaffRoleId = role.Id;
+            staff.StaffRole = role;
+        }
+        else if (isNew)
+        {
+            var role = await _companies.LegacyRoleAsync(companyId, legacyLevel);
+            staff.StaffRoleId = role?.Id;
+            staff.StaffRole = role;
+        }
+
+        // Naming venues means "only these", even without allVenues:false spelled out.
+        var limitToVenues = allVenues == false || (allVenues == null && venueIds != null);
+        if (allVenues == true)
+        {
+            staff.StaffAllVenues = true;
+            staff.StaffVenueIds = [];
+        }
+        else if (limitToVenues)
+        {
+            var wanted = (venueIds ?? []).Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().ToList();
+            if (wanted.Count == 0) return "Choose at least one venue, or give access to all venues.";
+
+            var owned = await _db.Venues
+                .Where(v => v.OwnerId == companyId && wanted.Contains(v.Id))
+                .Select(v => v.Id)
+                .ToListAsync();
+            if (owned.Count != wanted.Count) return "One of those venues is not yours.";
+
+            staff.StaffAllVenues = false;
+            staff.StaffVenueIds = wanted;
+        }
+
+        return null;
+    }
 
     [HttpGet("me")]
     public async Task<IActionResult> GetMe()
     {
-        var user = await _db.Users.FindAsync(UserId);
+        var user = await _db.Users.Include(u => u.StaffRole).FirstOrDefaultAsync(u => u.Id == UserId);
         if (user == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
 
-        return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "OK" });
+        var dto = ToDto(user);
+        if (_access.CompanyId != null || _access.IsAdmin)
+        {
+            var company = _access.CompanyId == null ? null : await _companies.EnsureAsync(_access.CompanyId);
+            dto.Access = new AccessSummary
+            {
+                CompanyId = company?.OwnerId,
+                CompanyName = company?.Name,
+                StaffRole = _access.IsStaff && _access.StaffRoleId != null
+                    ? new StaffRoleRef { Id = _access.StaffRoleId, Name = _access.StaffRoleName ?? "" }
+                    : null,
+                Permissions = _access.Permissions.ToList(),
+                AllVenues = _access.RestrictedVenueIds == null,
+                VenueIds = _access.RestrictedVenueIds?.ToList() ?? [],
+            };
+        }
+
+        return Ok(new ApiResponse<UserResponse> { Data = dto, Message = "OK" });
     }
 
     [HttpPatch("me")]
@@ -209,7 +290,8 @@ public class UsersController : ControllerBase
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Forbidden" });
         }
 
-        var query = _db.Users.Where(u => u.Role == "venue_staff" && u.ManagedByOwnerId == ownerId);
+        var query = _db.Users.Include(u => u.StaffRole)
+            .Where(u => u.Role == "venue_staff" && u.ManagedByOwnerId == ownerId);
 
         var total = await query.CountAsync();
         var staff = await query
@@ -242,9 +324,40 @@ public class UsersController : ControllerBase
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Forbidden" });
 
         user.Permissions = req.Permissions;
+        // Kept for older dashboards: read/write now means the company's matching starter role.
+        if (!string.IsNullOrEmpty(user.ManagedByOwnerId))
+        {
+            var role = await _companies.LegacyRoleAsync(user.ManagedByOwnerId, req.Permissions);
+            user.StaffRoleId = role?.Id;
+            user.StaffRole = role;
+        }
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "Permissions updated" });
+    }
+
+    /// <summary>
+    /// PATCH /api/v1/users/{id}/staff — a clerk's role and venues. The owner of that clerk, or an
+    /// admin. Each field is optional; omitted ones are left as they are.
+    /// </summary>
+    [HttpPatch("{userId}/staff")]
+    public async Task<IActionResult> UpdateStaffAssignment(string userId, [FromBody] StaffAssignmentRequest req)
+    {
+        var user = await _db.Users.Include(u => u.StaffRole).FirstOrDefaultAsync(u => u.Id == userId);
+        if (user == null || user.Role != "venue_staff" || string.IsNullOrEmpty(user.ManagedByOwnerId))
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Staff account not found" });
+
+        var allowed = _access.IsAdmin || (_access.IsOwner && user.ManagedByOwnerId == _access.UserId);
+        if (!allowed)
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Forbidden" });
+
+        var error = await ApplyStaffAssignmentAsync(
+            user, user.ManagedByOwnerId, req.StaffRoleId, req.AllVenues, req.VenueIds, isNew: false, legacyLevel: null);
+        if (error != null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = error });
+
+        await _db.SaveChangesAsync();
+        return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "Staff updated" });
     }
 
     [HttpPost]
@@ -303,6 +416,9 @@ public class UsersController : ControllerBase
             }
         }
 
+        if (req.Role == "venue_staff" && req.Permissions is not (null or "read" or "write"))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "permissions must be 'read' or 'write'" });
+
         var user = new Models.User
         {
             Name        = req.Name.Trim(),
@@ -315,8 +431,20 @@ public class UsersController : ControllerBase
             ManagedByOwnerId = managedByOwnerId,
         };
 
+        if (req.Role == "venue_staff")
+        {
+            var error = await ApplyStaffAssignmentAsync(
+                user, managedByOwnerId!, req.StaffRoleId, req.AllVenues, req.VenueIds,
+                isNew: true, legacyLevel: user.Permissions);
+            if (error != null)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = error });
+        }
+
         _db.Users.Add(user);
         await _db.SaveChangesAsync();
+
+        if (user.Role == "venue_owner")
+            await _companies.EnsureAsync(user.Id);
 
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "User created" });
     }
@@ -454,10 +582,16 @@ public class UsersController : ControllerBase
         {
             user.ManagedByOwnerId = null;
             user.Permissions = null;
+            user.StaffRoleId = null;
+            user.StaffAllVenues = true;
+            user.StaffVenueIds = [];
         }
 
         user.Role = req.Role;
         await _db.SaveChangesAsync();
+
+        if (user.Role == "venue_owner")
+            await _companies.EnsureAsync(user.Id);
 
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "User role updated" });
     }

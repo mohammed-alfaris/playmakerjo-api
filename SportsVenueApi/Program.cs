@@ -62,6 +62,7 @@ builder.Services.AddSingleton<JwtService>();
 builder.Services.AddScoped<NotificationService>();
 builder.Services.AddScoped<SettingsService>();
 builder.Services.AddScoped<AccessContext>();
+builder.Services.AddScoped<CompanyService>();
 
 // ── Unpaid-booking expiry ───────────────────────────────────────────────────────────
 builder.Services.Configure<BookingExpiryOptions>(

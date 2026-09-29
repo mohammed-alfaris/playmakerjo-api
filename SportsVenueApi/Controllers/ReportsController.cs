@@ -19,11 +19,13 @@ public class ReportsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly SettingsService _settings;
+    private readonly AccessContext _access;
 
-    public ReportsController(AppDbContext db, SettingsService settings)
+    public ReportsController(AppDbContext db, SettingsService settings, AccessContext access)
     {
         _db = db;
         _settings = settings;
+        _access = access;
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -75,6 +77,14 @@ public class ReportsController : ControllerBase
                 .Select(v => v.Id)
                 .ToListAsync();
             return new ReportScope(true, ownIds);
+        }
+
+        // Staff see reports only when their role grants it, and only for the venues they
+        // work at — a branch manager's report is that branch's numbers.
+        if (_access.IsStaff && _access.Has(StaffPermissions.ReportsView))
+        {
+            var scopedIds = await _access.ScopeVenues(_db.Venues).Select(v => v.Id).ToListAsync();
+            return new ReportScope(true, scopedIds);
         }
 
         return new ReportScope(false, null);

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using SportsVenueApi.DTOs.Staff;
 
 namespace SportsVenueApi.DTOs.Users;
 
@@ -32,6 +33,26 @@ public class UserResponse
     [JsonPropertyName("managedByOwnerId")]
     public string? ManagedByOwnerId { get; set; }
 
+    /// <summary>Staff only: the company role they hold.</summary>
+    [JsonPropertyName("staffRole")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public StaffRoleRef? StaffRole { get; set; }
+
+    /// <summary>Staff only: true = every venue of the company.</summary>
+    [JsonPropertyName("allVenues")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? AllVenues { get; set; }
+
+    /// <summary>Staff only: the venues they are limited to, when not all.</summary>
+    [JsonPropertyName("venueIds")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? VenueIds { get; set; }
+
+    /// <summary>GET /users/me only: what the signed-in user may do in the back office.</summary>
+    [JsonPropertyName("access")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AccessSummary? Access { get; set; }
+
     [JsonPropertyName("createdAt")]
     public string CreatedAt { get; set; } = "";
 }
@@ -63,6 +84,17 @@ public class CreateUserRequest
     /// </summary>
     [JsonPropertyName("managedByOwnerId")]
     public string? ManagedByOwnerId { get; set; }
+
+    /// <summary>Staff only. Omitted → the company's "View only" (or "Front desk" for write).</summary>
+    [JsonPropertyName("staffRoleId")]
+    public string? StaffRoleId { get; set; }
+
+    /// <summary>Staff only. Omitted → all venues.</summary>
+    [JsonPropertyName("allVenues")]
+    public bool? AllVenues { get; set; }
+
+    [JsonPropertyName("venueIds")]
+    public List<string>? VenueIds { get; set; }
 }
 
 public class PermissionsUpdateRequest
