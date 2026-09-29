@@ -23,13 +23,21 @@ public class VenuesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly string _uploadsBaseUrl;
     private readonly AccessContext _access;
+    private readonly CompanyService _companies;
 
-    public VenuesController(AppDbContext db, IConfiguration config, AccessContext access)
+    public VenuesController(AppDbContext db, IConfiguration config, AccessContext access, CompanyService companies)
     {
         _db = db;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
         _access = access;
+        _companies = companies;
     }
+
+    /// <summary>A venue can only belong to a real owner. Null when it can, else the refusal.</summary>
+    private async Task<string?> ValidateOwnerAsync(string ownerId) =>
+        await _db.Users.AnyAsync(u => u.Id == ownerId && u.Role == "venue_owner")
+            ? null
+            : "owner_id must reference an existing venue owner.";
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
@@ -485,6 +493,11 @@ public class VenuesController : ControllerBase
         if (UserRole == "venue_owner")
             ownerId = UserId;
 
+        // An admin naming an owner used to be taken on trust, so a venue could be created for a
+        // player — or for no one. It must now be a real owner, since it counts against their limit.
+        if (await ValidateOwnerAsync(ownerId) is { } badOwner)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = badOwner });
+
         // Split config is football-only — reject split settings on non-football venues.
         var scopeErr = ValidateSplitScope(req.Sports, req.ParentSize, req.SportsConfig);
         if (scopeErr != null)
@@ -575,8 +588,18 @@ public class VenuesController : ControllerBase
         if (req.Pitches != null)
             venue.Pitches = req.Pitches;
 
-        _db.Venues.Add(venue);
-        await _db.SaveChangesAsync();
+        // The limit check and the insert share one transaction, holding the company row lock,
+        // so two creates racing at the limit cannot both get in.
+        await _companies.EnsureAsync(ownerId);
+        await using (var tx = await _db.Database.BeginTransactionAsync())
+        {
+            if (await _companies.LockAndCheckVenueRoomAsync(ownerId) is { } full)
+                return Conflict(new ApiResponse<object> { Success = false, Message = full });
+
+            _db.Venues.Add(venue);
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+        }
 
         // Reload with owner
         var created = await _db.Venues.Include(v => v.Owner).FirstAsync(v => v.Id == venue.Id);
@@ -615,10 +638,20 @@ public class VenuesController : ControllerBase
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to manage this venue" });
 
         // Ownership reassignment is admin-only. Echoing back the current owner is a no-op.
+        // Moving a venue into a company counts against that company's limit, so the check holds
+        // the receiving company's lock until this update is saved.
+        await using var reassignTx = req.OwnerId != null && req.OwnerId != venue.OwnerId && _access.IsAdmin
+            ? await _db.Database.BeginTransactionAsync()
+            : null;
         if (req.OwnerId != null && req.OwnerId != venue.OwnerId)
         {
             if (UserRole != "super_admin")
                 return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Only admins can reassign venue ownership" });
+            if (await ValidateOwnerAsync(req.OwnerId) is { } badOwner)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = badOwner });
+            await _companies.EnsureAsync(req.OwnerId);
+            if (await _companies.LockAndCheckVenueRoomAsync(req.OwnerId) is { } full)
+                return Conflict(new ApiResponse<object> { Success = false, Message = full });
             venue.OwnerId = req.OwnerId;
         }
 
@@ -777,6 +810,7 @@ public class VenuesController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = scopeErr });
 
         await _db.SaveChangesAsync();
+        if (reassignTx != null) await reassignTx.CommitAsync();
 
         // Reload owner if changed
         if (req.OwnerId != null)

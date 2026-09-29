@@ -440,8 +440,19 @@ public class UsersController : ControllerBase
                 return BadRequest(new ApiResponse<object> { Success = false, Message = error });
         }
 
+        // Hiring checks the staff limit under the company's row lock, held until the new clerk
+        // is saved, so two hires racing at the limit cannot both get in.
+        await using var tx = user.Role == "venue_staff" ? await _db.Database.BeginTransactionAsync() : null;
+        if (user.Role == "venue_staff")
+        {
+            await _companies.EnsureAsync(managedByOwnerId!);
+            if (await _companies.LockAndCheckStaffRoomAsync(managedByOwnerId!) is { } full)
+                return Conflict(new ApiResponse<object> { Success = false, Message = full });
+        }
+
         _db.Users.Add(user);
         await _db.SaveChangesAsync();
+        if (tx != null) await tx.CommitAsync();
 
         if (user.Role == "venue_owner")
             await _companies.EnsureAsync(user.Id);
@@ -474,13 +485,25 @@ public class UsersController : ControllerBase
         if (UserRole != "super_admin" && !isOwnStaff)
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Not allowed" });
 
+        // Reactivating a suspended clerk takes a seat again, so it must fit under the limit —
+        // otherwise suspend-then-reactivate is a way round it.
+        var reactivatingStaff = req.Status == "active" && user.Status != "active"
+            && user.Role == "venue_staff" && !string.IsNullOrEmpty(user.ManagedByOwnerId);
+        await using var tx = reactivatingStaff ? await _db.Database.BeginTransactionAsync() : null;
+        if (reactivatingStaff)
+        {
+            await _companies.EnsureAsync(user.ManagedByOwnerId!);
+            if (await _companies.LockAndCheckStaffRoomAsync(user.ManagedByOwnerId!) is { } full)
+                return Conflict(new ApiResponse<object> { Success = false, Message = full });
+        }
+
         user.Status = req.Status;
         await _db.SaveChangesAsync();
+        if (tx != null) await tx.CommitAsync();
 
-        // NOTE: a suspended user keeps working until their access token expires (<=15 min).
-        // Refresh re-reads the row and refuses, so the window is bounded, not open. See
-        // GAP-19 in playmakerjo-docs/NEXT-FIXES.md — closing it entirely costs a database
-        // read on every authenticated request.
+        // A suspended clerk loses back-office access on their next request: AccessContext reads
+        // the row every time. Other roles still keep a live access token until it expires
+        // (<=15 min); refresh re-reads the row and refuses, so that window is bounded.
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "User status updated" });
     }
 
