@@ -335,6 +335,38 @@ public class ReportsController : ControllerBase
         return Ok(new ApiResponse<PlatformReport> { Data = await _reports.PlatformAsync(period!, compare) });
     }
 
+    /// <summary>
+    /// Every report the caller may see, as one Excel workbook for the given filters.
+    /// lang=ar gives Arabic headings and a right-to-left layout.
+    /// </summary>
+    [HttpGet("export.xlsx")]
+    public async Task<IActionResult> ExportExcel(
+        [FromQuery] string? from = null, [FromQuery] string? to = null, [FromQuery] string? venue_id = null,
+        [FromQuery] string? owner_id = null, [FromQuery] string lang = "en")
+    {
+        var (scope, period, error) = await PrepareAsync(from, to, venue_id, owner_id);
+        if (error != null) return error;
+
+        var platformWide = scope!.PlatformWide;
+        var title = platformWide
+            ? "PlayMaker"
+            : (await _db.Companies.AsNoTracking().Where(c => c.OwnerId == scope.OwnerId).Select(c => c.Name).FirstOrDefaultAsync())
+              ?? "PlayMaker";
+
+        var input = new ReportWorkbook.Input(
+            title,
+            period!,
+            await _reports.MoneyAsync(scope, period!, compare: false),
+            await _reports.BookingsAsync(scope, period!, compare: false),
+            await _reports.OccupancyAsync(scope, period!, compare: false),
+            await _reports.CustomersAsync(scope, period!, compare: false),
+            platformWide && scope.IsAdmin ? await _reports.PlatformAsync(period!, compare: false) : null);
+
+        var bytes = ReportWorkbook.Build(input, lang == "ar" ? "ar" : "en");
+        return File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            $"playmaker-report-{period!.From:yyyy-MM-dd}-{period.To:yyyy-MM-dd}.xlsx");
+    }
+
     // Unscoped, this returned every booking on the platform — venue names, player names
     // and amounts — to any authenticated caller, and the dashboard shows the Export
     // button to venue owners. It was a one-click cross-tenant customer-list dump.
@@ -390,9 +422,13 @@ public class ReportsController : ControllerBase
             return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "report.csv");
         }
 
-        // PDF placeholder — return a simple text file since we don't have a PDF library
-        var pdfContent = $"Report generated at {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ssZ}\n\nBookings: {bookings.Count}";
-        return File(Encoding.UTF8.GetBytes(pdfContent), "application/pdf", "report.pdf");
+        // This used to answer "pdf" with a plain-text file labelled application/pdf, which
+        // every PDF reader refuses to open. The PDF is now the dashboard's print view.
+        return BadRequest(new ApiResponse<object>
+        {
+            Success = false,
+            Message = "Only format=csv is served here. For Excel use /reports/export.xlsx; for PDF, print the Reports page.",
+        });
     }
 
     /// <summary>
