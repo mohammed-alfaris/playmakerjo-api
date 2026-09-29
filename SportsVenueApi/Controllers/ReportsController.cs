@@ -9,6 +9,7 @@ using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Reports;
 using SportsVenueApi.Services;
+using SportsVenueApi.Services.Reports;
 
 namespace SportsVenueApi.Controllers;
 
@@ -19,76 +20,26 @@ public class ReportsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly SettingsService _settings;
-    private readonly AccessContext _access;
+    private readonly ReportScopeResolver _scopes;
+    private readonly ReportsService _reports;
 
-    public ReportsController(AppDbContext db, SettingsService settings, AccessContext access)
+    public ReportsController(AppDbContext db, SettingsService settings, ReportScopeResolver scopes, ReportsService reports)
     {
         _db = db;
         _settings = settings;
-        _access = access;
+        _scopes = scopes;
+        _reports = reports;
     }
-
-    private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
-    private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
 
     private const int SparklineDays = 14;
 
     /// <summary>
-    /// Which venues this request is allowed to aggregate over. <c>VenueIds == null</c>
-    /// means platform-wide (super_admin only).
+    /// Deny-by-default scope, shared with the report service and the export: admin sees
+    /// everything or one company, an owner their own company, staff with reports.view the
+    /// venues they work at. A client-supplied owner_id is honoured for admins only.
     /// </summary>
-    private sealed record ReportScope(bool Allowed, List<string>? VenueIds)
-    {
-        public bool PlatformWide => VenueIds == null;
-    }
-
-    /// <summary>
-    /// Resolves the caller's reporting scope. Deny-by-default: any role that is not
-    /// explicitly handled gets nothing.
-    ///
-    /// Previously every endpoint here either had no scoping at all or used the pattern
-    /// <c>if (UserRole == "venue_owner") ownerId = UserId;</c> followed by an
-    /// <c>if (!string.IsNullOrEmpty(ownerId))</c> filter — which pinned exactly one role
-    /// and let every other role (player, venue_staff, anything unrecognised) fall through
-    /// to the unfiltered platform-wide branch. On shared infrastructure sold to competing
-    /// venue owners that is a cross-tenant disclosure, so scope is now derived from the
-    /// token and the client-supplied owner_id is honoured only for super_admin.
-    /// </summary>
-    private async Task<ReportScope> ResolveScopeAsync(string? requestedOwnerId)
-    {
-        if (UserRole == "super_admin")
-        {
-            if (string.IsNullOrEmpty(requestedOwnerId))
-                return new ReportScope(true, null);
-
-            var scopedIds = await _db.Venues
-                .Where(v => v.OwnerId == requestedOwnerId)
-                .Select(v => v.Id)
-                .ToListAsync();
-            return new ReportScope(true, scopedIds);
-        }
-
-        if (UserRole == "venue_owner")
-        {
-            // requestedOwnerId is deliberately ignored — an owner may only ever see
-            // their own venues, whatever the query string asks for.
-            var ownIds = await _db.Venues
-                .Where(v => v.OwnerId == UserId)
-                .Select(v => v.Id)
-                .ToListAsync();
-            return new ReportScope(true, ownIds);
-        }
-
-        // Staff see reports only when their role grants it, and only for the venues they
-        // work at — a branch manager's report is that branch's numbers.
-        if (_access.IsStaff && _access.Has(StaffPermissions.ReportsView))
-        {
-            var scopedIds = await _access.ScopeVenues(_db.Venues).Select(v => v.Id).ToListAsync();
-            return new ReportScope(true, scopedIds);
-        }
-
-        return new ReportScope(false, null);
-    }
+    private Task<ReportScope> ResolveScopeAsync(string? requestedOwnerId, string? venueId = null) =>
+        _scopes.ResolveAsync(requestedOwnerId, venueId);
 
     /// <summary>
     /// Compute per-day totals for the last <paramref name="days"/> days (oldest → newest),
@@ -96,7 +47,10 @@ public class ReportsController : ControllerBase
     /// </summary>
     private async Task<SummarySparklines> ComputeSparklinesAsync(List<string>? venueIds, int days, bool includeSystemRevenue)
     {
-        var since = DateTime.UtcNow.Date.AddDays(-(days - 1));
+        // Booking.Date is an Amman calendar date; "today" has to be too, or after 21:00 in
+        // Amman the chart's last day is already tomorrow's and tonight's bookings vanish.
+        var today = PlatformConstants.JordanToday();
+        var since = today.AddDays(-(days - 1));
 
         var query = _db.Bookings.Where(b => b.Date >= since);
         if (venueIds != null)
@@ -122,7 +76,7 @@ public class ReportsController : ControllerBase
         var ownerRevenue = new List<double>(days);
         var bookings = new List<double>(days);
 
-        for (var d = since; d <= DateTime.UtcNow.Date; d = d.AddDays(1))
+        for (var d = since; d <= today; d = d.AddDays(1))
         {
             if (byDay.TryGetValue(d, out var day))
             {
@@ -220,7 +174,8 @@ public class ReportsController : ControllerBase
         var scope = await ResolveScopeAsync(owner_id);
         if (!scope.Allowed) return Forbid();
 
-        var since = DateTime.UtcNow.Date.AddDays(-days);
+        var today = PlatformConstants.JordanToday();
+        var since = today.AddDays(-days);
 
         var query = _db.Bookings.Where(b => b.Status == "completed" && b.Date >= since);
         if (!scope.PlatformWide)
@@ -238,7 +193,7 @@ public class ReportsController : ControllerBase
             });
 
         var result = new List<RevenueChartPoint>();
-        for (var d = since; d <= DateTime.UtcNow.Date; d = d.AddDays(1))
+        for (var d = since; d <= today; d = d.AddDays(1))
         {
             var day = grouped.GetValueOrDefault(d);
             result.Add(new RevenueChartPoint
@@ -309,6 +264,75 @@ public class ReportsController : ControllerBase
             item.Sport = CultureInfo.CurrentCulture.TextInfo.ToTitleCase(item.Sport);
 
         return Ok(new ApiResponse<List<SportBreakdownItem>> { Data = data });
+    }
+
+    // ── Business reports ─────────────────────────────────────────────────────
+    // One endpoint per area, all taking the same filters. Definitions live in ReportsService.
+
+    private async Task<(ReportScope? Scope, ReportPeriod? Period, IActionResult? Error)> PrepareAsync(
+        string? from, string? to, string? venueId, string? ownerId)
+    {
+        var scope = await ResolveScopeAsync(ownerId, venueId);
+        if (!scope.Allowed) return (null, null, Forbid());
+        var (period, error) = ReportPeriod.Parse(from, to);
+        if (period == null)
+            return (null, null, BadRequest(new ApiResponse<object> { Success = false, Message = error! }));
+        return (scope, period, null);
+    }
+
+    [HttpGet("money")]
+    public async Task<IActionResult> Money(
+        [FromQuery] string? from = null, [FromQuery] string? to = null, [FromQuery] string? venue_id = null,
+        [FromQuery] string? owner_id = null, [FromQuery] bool compare = false)
+    {
+        var (scope, period, error) = await PrepareAsync(from, to, venue_id, owner_id);
+        if (error != null) return error;
+        return Ok(new ApiResponse<MoneyReport> { Data = await _reports.MoneyAsync(scope!, period!, compare) });
+    }
+
+    [HttpGet("bookings")]
+    public async Task<IActionResult> Bookings(
+        [FromQuery] string? from = null, [FromQuery] string? to = null, [FromQuery] string? venue_id = null,
+        [FromQuery] string? owner_id = null, [FromQuery] bool compare = false)
+    {
+        var (scope, period, error) = await PrepareAsync(from, to, venue_id, owner_id);
+        if (error != null) return error;
+        return Ok(new ApiResponse<BookingsReport> { Data = await _reports.BookingsAsync(scope!, period!, compare) });
+    }
+
+    [HttpGet("occupancy")]
+    public async Task<IActionResult> Occupancy(
+        [FromQuery] string? from = null, [FromQuery] string? to = null, [FromQuery] string? venue_id = null,
+        [FromQuery] string? owner_id = null, [FromQuery] bool compare = false)
+    {
+        var (scope, period, error) = await PrepareAsync(from, to, venue_id, owner_id);
+        if (error != null) return error;
+        return Ok(new ApiResponse<OccupancyReport> { Data = await _reports.OccupancyAsync(scope!, period!, compare) });
+    }
+
+    /// <summary>
+    /// Customers need customers.view as well for staff (names and phones), and the team
+    /// section is owner/admin only; a section the caller may not see comes back null.
+    /// </summary>
+    [HttpGet("customers")]
+    public async Task<IActionResult> Customers(
+        [FromQuery] string? from = null, [FromQuery] string? to = null, [FromQuery] string? venue_id = null,
+        [FromQuery] string? owner_id = null, [FromQuery] bool compare = false)
+    {
+        var (scope, period, error) = await PrepareAsync(from, to, venue_id, owner_id);
+        if (error != null) return error;
+        return Ok(new ApiResponse<CustomersReport> { Data = await _reports.CustomersAsync(scope!, period!, compare) });
+    }
+
+    /// <summary>The platform as a whole: every company, growth, and the fee. Admin only.</summary>
+    [HttpGet("platform")]
+    public async Task<IActionResult> Platform(
+        [FromQuery] string? from = null, [FromQuery] string? to = null, [FromQuery] bool compare = false)
+    {
+        var (scope, period, error) = await PrepareAsync(from, to, null, null);
+        if (error != null) return error;
+        if (!scope!.IsAdmin) return Forbid();
+        return Ok(new ApiResponse<PlatformReport> { Data = await _reports.PlatformAsync(period!, compare) });
     }
 
     // Unscoped, this returned every booking on the platform — venue names, player names

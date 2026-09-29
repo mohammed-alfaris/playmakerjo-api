@@ -63,6 +63,8 @@ builder.Services.AddScoped<NotificationService>();
 builder.Services.AddScoped<SettingsService>();
 builder.Services.AddScoped<AccessContext>();
 builder.Services.AddScoped<CompanyService>();
+builder.Services.AddScoped<SportsVenueApi.Services.Reports.ReportScopeResolver>();
+builder.Services.AddScoped<SportsVenueApi.Services.Reports.ReportsService>();
 
 // ── Unpaid-booking expiry ───────────────────────────────────────────────────────────
 builder.Services.Configure<BookingExpiryOptions>(
