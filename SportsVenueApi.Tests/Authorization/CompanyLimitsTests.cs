@@ -248,5 +248,13 @@ public class CompanyLimitsTests
         Assert.Equal(owner.Id, row.Id);
         Assert.Equal(2, row.Venues.Used);
         Assert.Null(row.Venues.Max);
+
+        // Found by the company's own name once the owner renames it.
+        var ownerClient = _fx.CreateClientFor(owner.Id, "venue_owner");
+        var brand = "Brand" + Guid.NewGuid().ToString("N")[..8];
+        await ownerClient.PatchAsJsonAsync("/api/v1/companies/me", new { name = brand + " Sports" });
+        var byName = (await (await Admin.GetAsync($"/api/v1/companies?search={brand}"))
+            .Content.ReadFromJsonAsync<ApiResponse<List<CompanyResponse>>>())!.Data!;
+        Assert.Equal(owner.Id, Assert.Single(byName).Id);
     }
 }

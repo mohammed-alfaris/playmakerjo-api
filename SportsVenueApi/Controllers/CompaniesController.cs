@@ -73,7 +73,12 @@ public class CompaniesController : ControllerBase
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
-            owners = owners.Where(u => EF.Functions.Like(u.Name, $"%{term}%") || EF.Functions.Like(u.Email, $"%{term}%"));
+            // The company's own names too: once renamed, that is what an admin remembers it by.
+            owners = owners.Where(u =>
+                EF.Functions.Like(u.Name, $"%{term}%")
+                || EF.Functions.Like(u.Email, $"%{term}%")
+                || _db.Companies.Any(c => c.OwnerId == u.Id
+                    && (EF.Functions.Like(c.Name, $"%{term}%") || EF.Functions.Like(c.NameAr!, $"%{term}%"))));
         }
 
         var total = await owners.CountAsync();
