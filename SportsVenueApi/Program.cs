@@ -61,6 +61,7 @@ if (builder.Environment.IsProduction() && knownJwtPlaceholders.Contains(secretKe
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddScoped<NotificationService>();
 builder.Services.AddScoped<SettingsService>();
+builder.Services.AddScoped<AccessContext>();
 
 // ── Unpaid-booking expiry ───────────────────────────────────────────────────────────
 builder.Services.Configure<BookingExpiryOptions>(
@@ -228,7 +229,7 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(optio
 
 builder.Services.AddValidatorsFromAssemblyContaining<SportsVenueApi.Validation.VenueCreateRequestValidator>();
 builder.Services.AddFluentValidationAutoValidation();
-builder.Services.AddControllers();
+builder.Services.AddControllers(o => o.Filters.Add<AccessContextFilter>());
 builder.Services.AddOpenApi();
 
 var app = builder.Build();

@@ -27,6 +27,7 @@ public class BookingsController : ControllerBase
     private readonly ExpiryPolicy _expiry;
     private readonly string _uploadsBaseUrl;
     private readonly string _contentRoot;
+    private readonly AccessContext _access;
 
     public BookingsController(
         AppDbContext db,
@@ -35,7 +36,8 @@ public class BookingsController : ControllerBase
         ILogger<BookingsController> logger,
         ExpiryPolicy expiry,
         IConfiguration config,
-        IWebHostEnvironment env)
+        IWebHostEnvironment env,
+        AccessContext access)
     {
         _db = db;
         _notifications = notifications;
@@ -44,46 +46,26 @@ public class BookingsController : ControllerBase
         _expiry = expiry;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
         _contentRoot = env.ContentRootPath;
+        _access = access;
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
 
-    /// <summary>The venue_owner a staff caller works for. Null for every other role.</summary>
-    private string? StaffOwnerId => User.FindFirstValue("owner_id");
-
-    /// <summary>"read" | "write" for a staff caller. Null for every other role.</summary>
-    private string? StaffPermissions => User.FindFirstValue("permissions");
-
-    /// <summary>The owner whose data this caller belongs to — themselves, or their boss.</summary>
-    private string? EffectiveOwnerId => UserRole switch
-    {
-        "venue_owner" => UserId,
-        "venue_staff" => StaffOwnerId,
-        _ => null,
-    };
-
     /// <summary>
-    /// May this caller act on the booking from the venue's side — i.e. confirm, complete,
-    /// mark no-show, or review a payment proof? Mirrors <see cref="Helpers.VenueAccess"/>.
+    /// May this caller do <paramref name="permission"/> on the booking's venue? Owners and admins
+    /// always may; staff need the permission in their role AND the venue in their scope.
     ///
-    /// Every guard in this controller used to be written as a deny-list
-    /// (<c>if (UserRole == "venue_owner" &amp;&amp; ...) return Forbid();</c>), which named the
-    /// roles to block and let everything else through. A venue_staff token — a real role
-    /// this product creates — matched neither branch and so passed all of them, gaining
-    /// unrestricted control over every booking on the platform. Allow-listing instead
-    /// means an unrecognised or future role is denied rather than trusted.
+    /// Every guard here used to be a deny-list naming the roles to block, which let any role
+    /// it forgot straight through. <see cref="AccessContext"/> is an allow-list: an unknown or
+    /// future role, an unlinked clerk or a suspended one gets nothing.
     /// Requires <c>booking.Venue</c> to be loaded.
     /// </summary>
-    private bool CanManageBooking(Booking booking) =>
-        VenueAccess.CanWrite(booking.Venue, UserId, UserRole, StaffOwnerId, StaffPermissions);
+    private bool CanOnBooking(string permission, Booking booking) => _access.Can(permission, booking.Venue);
 
-    /// <summary>
-    /// May this caller see or cancel this booking — venue-side, or the player who made it?
-    /// Read-only staff land here but not in <see cref="CanManageBooking"/>.
-    /// </summary>
+    /// <summary>May this caller see this booking — venue-side, or the player who made it?</summary>
     private bool CanAccessBooking(Booking booking) =>
-        VenueAccess.CanView(booking.Venue, UserId, UserRole, StaffOwnerId)
+        _access.Can(StaffPermissions.BookingsView, booking.Venue)
         || (UserRole == "player" && booking.PlayerId == UserId);
 
     /// <summary>
@@ -112,18 +94,17 @@ public class BookingsController : ControllerBase
         // have /bookings/my for their own list; this back-office list is not for them.
         var baseQuery = _db.Bookings.AsQueryable();
 
-        if (UserRole == "super_admin")
+        if (_access.IsAdmin)
         {
             // Admins may narrow to one owner; omitting owner_id means platform-wide.
             if (!string.IsNullOrEmpty(owner_id))
                 baseQuery = baseQuery.Where(b => b.Venue.OwnerId == owner_id);
         }
-        else if (EffectiveOwnerId is { Length: > 0 } scopedOwnerId)
+        else if (_access.Has(StaffPermissions.BookingsView))
         {
-            // Owners see their own; staff see their employer's. owner_id from the query
-            // string is ignored in both cases — scope comes from the token. An unlinked
-            // staff account has no EffectiveOwnerId and falls through to Forbid.
-            baseQuery = baseQuery.Where(b => b.Venue.OwnerId == scopedOwnerId);
+            // Owners see their own; staff see their employer's venues within their scope.
+            // owner_id from the query string is ignored — scope comes from the account.
+            baseQuery = _access.ScopeBookings(baseQuery);
         }
         else
         {
@@ -478,7 +459,7 @@ public class BookingsController : ControllerBase
             // Admin, the venue's owner, or that owner's staff with "write". Read-only staff
             // and everyone else are refused. This is the counter clerk's entire job, so it
             // is the one place staff access genuinely has to work.
-            if (!VenueAccess.CanWrite(venue, UserId, UserRole, StaffOwnerId, StaffPermissions))
+            if (!_access.Can(StaffPermissions.BookingsManage, venue))
                 return Forbid();
         }
 
@@ -617,7 +598,7 @@ public class BookingsController : ControllerBase
         // touch nothing. Every other state change on this controller already uses
         // CanManageBooking; cancel was the one that did not.
         var isOwnPlayerBooking = UserRole == "player" && booking.PlayerId == UserId;
-        if (!isOwnPlayerBooking && !CanManageBooking(booking))
+        if (!isOwnPlayerBooking && !CanOnBooking(StaffPermissions.BookingsManage, booking))
             return Forbid();
 
         // Can only cancel pending/confirmed bookings
@@ -662,11 +643,21 @@ public class BookingsController : ControllerBase
         if (booking == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
 
-        if (!CanManageBooking(booking))
+        if (!CanOnBooking(StaffPermissions.BookingsManage, booking))
             return Forbid();
 
         if (booking.Status != "confirmed")
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Only confirmed bookings can be marked as completed" });
+
+        // Completing also collects any balance (below), so it moves money: a role that may run
+        // the schedule but not take payments must not be able to record one this way.
+        if (booking.TotalAmount - booking.AmountPaid > PaymentLedger.Epsilon
+            && !CanOnBooking(StaffPermissions.PaymentsRecord, booking))
+            return StatusCode(403, new ApiResponse<object>
+            {
+                Success = false,
+                Message = "This booking has a balance to collect, and your role cannot take payments."
+            });
 
         // Completing a booking is ONE act at the counter, not two: the customer played and he
         // paid. So any outstanding balance is collected here rather than being a precondition
@@ -725,7 +716,7 @@ public class BookingsController : ControllerBase
         if (booking == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
 
-        if (!CanManageBooking(booking))
+        if (!CanOnBooking(StaffPermissions.BookingsManage, booking))
             return Forbid();
 
         if (booking.Status != "confirmed")
@@ -764,7 +755,7 @@ public class BookingsController : ControllerBase
         if (booking == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
 
-        if (!CanManageBooking(booking))
+        if (!CanOnBooking(StaffPermissions.PaymentsRecord, booking))
             return Forbid();
 
         if (booking.Status is "cancelled")
@@ -825,13 +816,13 @@ public class BookingsController : ControllerBase
             // asking about it would train the owner to answer before he knows.
             .Where(b => b.Status == "confirmed" && b.Date.Date < today && b.Date.Date >= since);
 
-        if (UserRole == "super_admin")
+        if (_access.IsAdmin)
         {
             // Nothing extra — admins review nothing in practice, but the shape stays uniform.
         }
-        else if (EffectiveOwnerId is { Length: > 0 } ownerId)
+        else if (_access.Has(StaffPermissions.BookingsView))
         {
-            query = query.Where(b => b.Venue.OwnerId == ownerId);
+            query = _access.ScopeBookings(query);
         }
         else
         {
@@ -884,7 +875,7 @@ public class BookingsController : ControllerBase
         {
             // Re-check every row: ids come from the client, and a stale tab could carry
             // bookings from a venue the caller no longer manages.
-            if (!CanManageBooking(booking)) continue;
+            if (!CanOnBooking(StaffPermissions.BookingsManage, booking)) continue;
             if (booking.Status != "confirmed") continue;
             if (booking.Date.Date >= today) continue;
 
@@ -1049,7 +1040,7 @@ public class BookingsController : ControllerBase
 
         // Only the venue's own side may review a payment proof — approving one marks
         // money as received, so this must never fall through to an unnamed role.
-        if (!CanManageBooking(booking))
+        if (!CanOnBooking(StaffPermissions.PaymentsRecord, booking))
             return Forbid();
 
         if (booking.PaymentProofStatus != "pending_review")
@@ -1135,7 +1126,7 @@ public class BookingsController : ControllerBase
         // this endpoint, and walk away with status=confirmed and depositPaid=true having
         // transferred nothing. A player's route to confirmed is upload-proof, then the
         // venue approving it in review-proof.
-        if (!CanManageBooking(booking))
+        if (!CanOnBooking(StaffPermissions.PaymentsRecord, booking))
             return Forbid();
 
         if (booking.Status != "pending" && booking.Status != "pending_payment")
@@ -1512,7 +1503,7 @@ public class BookingsController : ControllerBase
         // Fails closed: an unloaded Venue navigation yields no back-office access
         // rather than an accidental grant.
         var isBackOffice = b.Venue != null
-            && VenueAccess.CanView(b.Venue, UserId, UserRole, StaffOwnerId);
+            && _access.CanSeeVenue(b.Venue);
 
         // The player on THIS booking. Not a role — a relationship to one row.
         //
@@ -1523,7 +1514,7 @@ public class BookingsController : ControllerBase
         // eventually cancelled it. A security fix that silently breaks the payment
         // funnel is a worse outage than the leak it closed.
         //
-        // Deliberately NOT done by widening VenueAccess.CanView: that helper decides
+        // Deliberately NOT done by widening AccessContext.CanSeeVenue: that decides
         // back-office access in a dozen places, and a player must not gain any of
         // them. This grants exactly one venue's alias to someone already holding a
         // booking there — the person who needs it, and no wider.

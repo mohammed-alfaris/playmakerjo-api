@@ -10,6 +10,7 @@ using SportsVenueApi.DTOs.PermanentBookings;
 using SportsVenueApi.DTOs.Venues;
 using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
+using SportsVenueApi.Services;
 
 namespace SportsVenueApi.Controllers;
 
@@ -31,11 +32,13 @@ public class PermanentBookingsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly ILogger<PermanentBookingsController> _logger;
+    private readonly AccessContext _access;
 
-    public PermanentBookingsController(AppDbContext db, ILogger<PermanentBookingsController> logger)
+    public PermanentBookingsController(AppDbContext db, ILogger<PermanentBookingsController> logger, AccessContext access)
     {
         _db = db;
         _logger = logger;
+        _access = access;
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -339,20 +342,13 @@ public class PermanentBookingsController : ControllerBase
 
     // ---- Helpers ----
 
-    /// <summary>The venue_owner a staff caller works for. Null for every other role.</summary>
-    private string? StaffOwnerId => User.FindFirstValue("owner_id");
-
-    /// <summary>"read" | "write" for staff. Null otherwise.</summary>
-    private string? StaffPermissions => User.FindFirstValue("permissions");
-
     /// <summary>
     /// READ. Staff must be able to see standing reservations — this controller was still on
     /// the old owner-only helper, so a counter clerk got a 403 here while the slot was
     /// genuinely blocked. The schedule showed the hour free, the clerk promised it on the
     /// phone, and the server only refused at save: after the customer had been told yes.
     /// </summary>
-    private bool CanViewVenue(Venue venue) =>
-        VenueAccess.CanView(venue, UserId, UserRole, StaffOwnerId);
+    private bool CanViewVenue(Venue venue) => _access.Can(StaffPermissions.StandingView, venue);
 
     /// <summary>
     /// WRITE. A standing booking blocks the same hour every week indefinitely — there is no
@@ -361,8 +357,7 @@ public class PermanentBookingsController : ControllerBase
     /// the person answering the phone is being asked for, and forcing them to call the owner
     /// is how the feature stops being used.
     /// </summary>
-    private bool CanWriteVenue(Venue venue) =>
-        VenueAccess.CanWrite(venue, UserId, UserRole, StaffOwnerId, StaffPermissions);
+    private bool CanWriteVenue(Venue venue) => _access.Can(StaffPermissions.StandingManage, venue);
 
     /// <summary>Find the next date (today or later) whose DayOfWeek matches.</summary>
     private static DateTime NextDateForWeekday(int dow)

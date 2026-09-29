@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SportsVenueApi.Data;
+using SportsVenueApi.Constants;
+using SportsVenueApi.Services;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Payments;
 using SportsVenueApi.Models;
@@ -26,11 +28,16 @@ public class PaymentsController : ControllerBase
 {
     private readonly AppDbContext _db;
 
-    public PaymentsController(AppDbContext db) => _db = db;
+    private readonly AccessContext _access;
+
+    public PaymentsController(AppDbContext db, AccessContext access)
+    {
+        _db = db;
+        _access = access;
+    }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
-    private string? StaffOwnerId => User.FindFirstValue("owner_id");
 
     /// <summary>
     /// Narrow the ledger to what the caller is entitled to see, or return null to mean
@@ -49,12 +56,17 @@ public class PaymentsController : ControllerBase
                 break;
 
             case "venue_owner":
-                q = q.Where(p => p.Booking.Venue.OwnerId == UserId);
-                break;
-
             case "venue_staff":
-                if (string.IsNullOrEmpty(StaffOwnerId)) return null;
-                q = q.Where(p => p.Booking.Venue.OwnerId == StaffOwnerId);
+                // Owners see their own ledger; staff their employer's, for the venues in their
+                // scope, and only with a role that shows payments.
+                if (!_access.Has(StaffPermissions.PaymentsView)) return null;
+                var companyId = _access.CompanyId;
+                q = q.Where(p => p.Booking.Venue.OwnerId == companyId);
+                if (_access.RestrictedVenueIds is { } ids)
+                {
+                    var allowed = ids.ToList();
+                    q = q.Where(p => allowed.Contains(p.Booking.VenueId));
+                }
                 break;
 
             case "player":

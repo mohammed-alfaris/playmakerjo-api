@@ -307,7 +307,7 @@ public class StaffAccessTests
 
     // ----------------------------------------------- read staff must not rewrite the book
     //
-    // Every mutating BOOKING route runs through VenueAccess.CanWrite, but that helper takes
+    // Every mutating BOOKING route checked the venue-based write rule, but that rule takes
     // a Venue and customers are keyed on the owner, so the customer routes consulted the
     // permission nowhere at all. A clerk explicitly set to "read" — whose own UI copy says
     // "Cannot create or change anything" — could rename or archive every customer their

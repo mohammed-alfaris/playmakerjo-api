@@ -23,12 +23,39 @@ public class AppDbContext : DbContext
     public DbSet<VenueWaitlist> VenueWaitlist => Set<VenueWaitlist>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<VenueFeature> VenueFeatures => Set<VenueFeature>();
+    public DbSet<Company> Companies => Set<Company>();
+    public DbSet<StaffRole> StaffRoles => Set<StaffRole>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>(e =>
         {
             e.HasIndex(u => u.Email).IsUnique();
+
+            // Every staff list, staff count and "which company does this clerk belong to"
+            // reads by employer. The column had no index at all.
+            e.HasIndex(u => u.ManagedByOwnerId);
+
+            // Deleting a role must not delete the people in it. The API refuses to delete a
+            // role in use anyway; SetNull is the backstop, and a staff row with no role falls
+            // back to its legacy read/write level rather than to nothing or to everything.
+            e.HasOne(u => u.StaffRole)
+             .WithMany()
+             .HasForeignKey(u => u.StaffRoleId)
+             .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<Company>(e =>
+        {
+            e.HasOne(c => c.Owner)
+             .WithOne()
+             .HasForeignKey<Company>(c => c.OwnerId)
+             .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<StaffRole>(e =>
+        {
+            e.HasIndex(r => new { r.OwnerId, r.Name }).IsUnique();
         });
 
         modelBuilder.Entity<Venue>(e =>

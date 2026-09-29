@@ -8,6 +8,7 @@ using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Customers;
 using SportsVenueApi.Helpers;
+using SportsVenueApi.Services;
 
 namespace SportsVenueApi.Controllers;
 
@@ -25,40 +26,41 @@ public class CustomersController : ControllerBase
 {
     private readonly AppDbContext _db;
 
-    public CustomersController(AppDbContext db) => _db = db;
+    private readonly AccessContext _access;
+
+    public CustomersController(AppDbContext db, AccessContext access)
+    {
+        _db = db;
+        _access = access;
+    }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
-    private string? StaffOwnerId => User.FindFirstValue("owner_id");
-    private string? StaffPermissions => User.FindFirstValue("permissions");
 
     /// <summary>
     /// Whose book is this? Owners get their own, staff get their employer's, and everyone
     /// else — players, unlinked staff, unknown roles — gets nothing. Admins must name an
     /// owner explicitly: there is no cross-owner customer list at all, because customers
     /// are the single most sensitive thing a competitor could take.
+    ///
+    /// Staff also need a role that shows customers. The book is company-wide even for a clerk
+    /// limited to some venues: a customer belongs to the company, not to one branch.
     /// </summary>
-    private string? ResolveOwnerId(string? requestedOwnerId) => UserRole switch
-    {
-        "super_admin" => string.IsNullOrWhiteSpace(requestedOwnerId) ? null : requestedOwnerId,
-        "venue_owner" => UserId,
-        "venue_staff" => string.IsNullOrEmpty(StaffOwnerId) ? null : StaffOwnerId,
-        _ => null,
-    };
+    private string? ResolveOwnerId(string? requestedOwnerId) =>
+        _access.IsAdmin
+            ? (string.IsNullOrWhiteSpace(requestedOwnerId) ? null : requestedOwnerId)
+            : _access.Has(StaffPermissions.CustomersView) ? _access.CompanyId : null;
 
     /// <summary>
     /// May the caller change the book, as opposed to read it? <c>ResolveOwnerId</c>
     /// settles WHOSE book; this settles whether they may write to it.
     ///
-    /// Every mutating booking route goes through <c>VenueAccess.CanWrite</c>, but that
-    /// helper takes a Venue and customers are keyed on the owner, so nothing here
-    /// consulted the permission at all — a clerk explicitly set to "read", whose own
-    /// UI copy reads "Cannot create or change anything", could rename or archive every
-    /// customer their employer had. Fails closed: a staff row with no permissions claim
-    /// gets no write.
+    /// Customers are keyed on the owner rather than a venue, so for a while nothing here
+    /// consulted the clerk's permission at all — a clerk explicitly set to "read" could
+    /// rename or archive every customer their employer had. Now it is the role's
+    /// customers.manage, and a clerk without it gets no write.
     /// </summary>
-    private bool CanWriteCustomers =>
-        UserRole != "venue_staff" || StaffPermissions == "write";
+    private bool CanWriteCustomers => _access.Has(StaffPermissions.CustomersManage);
 
     /// <summary>A booking reduced to just what the stats need.</summary>
     private sealed record BookingFact(
@@ -220,6 +222,7 @@ public class CustomersController : ControllerBase
     {
         var ownerId = ResolveOwnerId(owner_id);
         if (ownerId == null) return Forbid();
+        if (!_access.Has(StaffPermissions.CustomersExport)) return Forbid();
 
         var customers = await _db.Customers
             .Where(c => c.OwnerId == ownerId)

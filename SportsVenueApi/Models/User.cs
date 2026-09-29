@@ -38,7 +38,11 @@ public class User
     [Column("avatar", TypeName = "text")]
     public string? Avatar { get; set; }
 
-    /// <summary>"read" | "write" — only relevant for venue_staff</summary>
+    /// <summary>
+    /// Legacy "read" | "write" level for venue_staff, from before roles existed. Consulted only
+    /// for a staff row with no <see cref="StaffRoleId"/>; the AddCompanies migration gave every
+    /// existing clerk a role, so in practice nothing reads this any more.
+    /// </summary>
     [Column("permissions")]
     [MaxLength(20)]
     public string? Permissions { get; set; }
@@ -59,6 +63,34 @@ public class User
     [Column("managed_by_owner_id")]
     [MaxLength(32)]
     public string? ManagedByOwnerId { get; set; }
+
+    /// <summary>For venue_staff: the company role that decides what they may do.</summary>
+    [Column("staff_role_id")]
+    [MaxLength(32)]
+    public string? StaffRoleId { get; set; }
+
+    [ForeignKey(nameof(StaffRoleId))]
+    public StaffRole? StaffRole { get; set; }
+
+    /// <summary>
+    /// For venue_staff: true = every venue the company has, including ones added later.
+    /// False = only <see cref="StaffVenueIds"/>.
+    /// </summary>
+    [Column("staff_all_venues")]
+    public bool StaffAllVenues { get; set; } = true;
+
+    [Column("staff_venue_ids", TypeName = "longtext")]
+    public string StaffVenueIdsJson { get; set; } = "[]";
+
+    // Builds a new list on each read: assign it back after changing it.
+    [NotMapped]
+    public List<string> StaffVenueIds
+    {
+        get => string.IsNullOrWhiteSpace(StaffVenueIdsJson)
+            ? []
+            : System.Text.Json.JsonSerializer.Deserialize<List<string>>(StaffVenueIdsJson) ?? [];
+        set => StaffVenueIdsJson = System.Text.Json.JsonSerializer.Serialize(value ?? []);
+    }
 
     /// <summary>"en" or "ar" — used for push notification language</summary>
     [Column("preferred_language")]

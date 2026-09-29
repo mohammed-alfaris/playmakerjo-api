@@ -11,6 +11,7 @@ using SportsVenueApi.DTOs.VenueFeatures;
 using SportsVenueApi.DTOs.Venues;
 using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
+using SportsVenueApi.Services;
 
 namespace SportsVenueApi.Controllers;
 
@@ -21,26 +22,17 @@ public class VenuesController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly string _uploadsBaseUrl;
+    private readonly AccessContext _access;
 
-    public VenuesController(AppDbContext db, IConfiguration config)
+    public VenuesController(AppDbContext db, IConfiguration config, AccessContext access)
     {
         _db = db;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
+        _access = access;
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
-
-    /// <summary>The venue_owner a staff caller works for. Null for every other role.</summary>
-    private string? StaffOwnerId => User.FindFirstValue("owner_id");
-
-    /// <summary>The owner whose venues this caller belongs to — themselves, or their boss.</summary>
-    private string? EffectiveOwnerId => UserRole switch
-    {
-        "venue_owner" => UserId,
-        "venue_staff" => StaffOwnerId,
-        _ => null,
-    };
 
     /// <summary>
     /// The venue as an outsider may see it: everything needed to browse, compare and book,
@@ -442,10 +434,11 @@ public class VenuesController : ControllerBase
             if (!string.IsNullOrEmpty(owner_id))
                 baseQuery = baseQuery.Where(v => v.OwnerId == owner_id);
         }
-        else if (EffectiveOwnerId is { Length: > 0 } scopedOwnerId)
+        else if (_access.CompanyId != null)
         {
-            // Owners see their own; staff see their employer's. The query string is ignored.
-            baseQuery = baseQuery.Where(v => v.OwnerId == scopedOwnerId);
+            // Owners see their own; staff see their employer's venues within their scope.
+            // The query string is ignored.
+            baseQuery = _access.ScopeVenues(baseQuery);
         }
         else
         {
@@ -603,7 +596,7 @@ public class VenuesController : ControllerBase
         // so any logged-in account — including a competing venue owner — could read another
         // venue's CliQ alias by id, and ids are enumerable from the public list.
         var catalog = await LoadFeatureCatalogAsync();
-        var dto = VenueAccess.CanView(venue, UserId, UserRole, StaffOwnerId)
+        var dto = _access.CanSeeVenue(venue)
             ? ToDto(venue, catalog)
             : ToPublicDto(venue, catalog);
 
@@ -618,7 +611,7 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        if (!VenueAccess.CanManage(venue, UserId, UserRole))
+        if (!_access.CanManageVenue(venue))
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to manage this venue" });
 
         // Ownership reassignment is admin-only. Echoing back the current owner is a no-op.
@@ -799,7 +792,7 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        if (!VenueAccess.CanManage(venue, UserId, UserRole))
+        if (!_access.CanManageVenue(venue))
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to manage this venue" });
 
         // Every foreign key pointing at a venue is ON DELETE CASCADE, so this one call also
@@ -1083,7 +1076,7 @@ public class VenuesController : ControllerBase
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
         // Stats include revenue — only the venue's owner or an admin may read them.
-        if (!VenueAccess.CanManage(venue, UserId, UserRole))
+        if (!_access.CanManageVenue(venue))
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to view this venue's stats" });
 
         var totalBookings = await _db.Bookings.CountAsync(b => b.VenueId == venueId);

@@ -28,6 +28,17 @@ public class PlatformSettings
     public string MaintenanceMessageAr { get; set; } =
         "تطبيق PlayMaker JO متوقف مؤقتًا للصيانة. سنعود للعمل قريبًا.";
 
+    /// <summary>
+    /// Venue limit given to a company when it is created. Null = unlimited. Copied, not
+    /// inherited: changing it later affects only companies created afterwards.
+    /// </summary>
+    [Column("default_max_venues")]
+    public int? DefaultMaxVenues { get; set; }
+
+    /// <summary>Staff limit given to a new company. Null = unlimited. Copied, as above.</summary>
+    [Column("default_max_staff")]
+    public int? DefaultMaxStaff { get; set; }
+
     [Column("updated_at")]
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }
