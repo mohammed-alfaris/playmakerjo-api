@@ -348,9 +348,11 @@ public class ReportsController : ControllerBase
         if (error != null) return error;
 
         var platformWide = scope!.PlatformWide;
+        // The company's name; an owner whose company row was never created yet still has theirs.
         var title = platformWide
             ? "PlayMaker"
             : (await _db.Companies.AsNoTracking().Where(c => c.OwnerId == scope.OwnerId).Select(c => c.Name).FirstOrDefaultAsync())
+              ?? (await _db.Users.AsNoTracking().Where(u => u.Id == scope.OwnerId).Select(u => u.Name).FirstOrDefaultAsync())
               ?? "PlayMaker";
 
         var input = new ReportWorkbook.Input(

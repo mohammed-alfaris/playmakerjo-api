@@ -70,6 +70,7 @@ public class ReportExcelTests
         var money = (await (await client.GetAsync("/api/v1/reports/money?" + Week))
             .Content.ReadFromJsonAsync<ApiResponse<MoneyReport>>())!.Data!;
         var summary = wb.Worksheet("Summary");
+        Assert.Equal("Throwaway Owner", summary.Cell(1, 1).GetString()); // no company row yet: the owner's name
         Assert.Equal("Collected", summary.Cell(5, 1).GetString());
         Assert.Equal(money.Collected.Value, summary.Cell(5, 2).GetDouble());
         Assert.Equal(35, money.Collected.Value);
