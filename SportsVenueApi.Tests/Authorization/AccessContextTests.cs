@@ -1,4 +1,7 @@
 using System.Net;
+using System.Net.Http.Json;
+using SportsVenueApi.DTOs;
+using SportsVenueApi.DTOs.Users;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using SportsVenueApi.Data;
@@ -58,6 +61,14 @@ public class AccessContextTests
 
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/bookings")).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/customers")).StatusCode);
+
+        // The dashboard is told plainly, rather than left to guess from an old read/write level.
+        var me = (await (await client.GetAsync("/api/v1/users/me"))
+            .Content.ReadFromJsonAsync<ApiResponse<UserResponse>>())!.Data!;
+        Assert.NotNull(me.Access);
+        Assert.Null(me.Access!.CompanyId);
+        Assert.Empty(me.Access.Permissions);
+        Assert.False(me.Access.AllVenues);
     }
 
     [Fact]

@@ -116,7 +116,10 @@ public class UsersController : ControllerBase
             return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
 
         var dto = ToDto(user);
-        if (_access.CompanyId != null || _access.IsAdmin)
+        // Staff always get an answer, empty when they have no company (suspended, unlinked, or
+        // their employer is banned) — omitting it would read to the dashboard as "not loaded
+        // yet" and it would fall back to their old read/write level.
+        if (_access.CompanyId != null || _access.IsAdmin || _access.IsStaff)
         {
             var company = _access.CompanyId == null ? null : await _companies.EnsureAsync(_access.CompanyId);
             dto.Access = new AccessSummary
@@ -127,7 +130,7 @@ public class UsersController : ControllerBase
                     ? new StaffRoleRef { Id = _access.StaffRoleId, Name = _access.StaffRoleName ?? "" }
                     : null,
                 Permissions = _access.Permissions.ToList(),
-                AllVenues = _access.RestrictedVenueIds == null,
+                AllVenues = (_access.IsAdmin || _access.CompanyId != null) && _access.RestrictedVenueIds == null,
                 VenueIds = _access.RestrictedVenueIds?.ToList() ?? [],
             };
         }
