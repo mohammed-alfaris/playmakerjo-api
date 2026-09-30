@@ -146,6 +146,9 @@ public class RefundAndCancellationTests
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         var booking = await _fx.LoadBooking(id);
         Assert.Equal(("cancelled", 0.0), (booking!.Status, booking.AmountPaid));
+        // The rule travels with the booking, so a cancel screen can preview it.
+        var dto = (await res.Content.ReadFromJsonAsync<ApiResponse<BookingResponse>>())!.Data!;
+        Assert.Equal(24, dto.Venue.FreeCancelHours);
         await AssertLedgerAddsUp(id);
     }
 

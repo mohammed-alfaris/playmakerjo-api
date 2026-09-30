@@ -1668,6 +1668,7 @@ public class BookingsController : ControllerBase
                 City = b.Venue.City,
                 CityAr = b.Venue.CityAr,
                 Images = b.Venue.Images?.Select(x => UploadUrlHelper.Normalize(x, _uploadsBaseUrl)).ToList()!,
+                FreeCancelHours = b.Venue.FreeCancelHours,
                 // The alias was stripped from the venue routes and left here, so it
                 // stayed harvestable: POST a booking against any venue id, read it
                 // off the 201, cancel. Venue ids come from the anonymous public list,

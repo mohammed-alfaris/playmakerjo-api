@@ -24,6 +24,13 @@ public class VenueRef
     public List<string> Images { get; set; } = [];
 
     /// <summary>
+    /// The venue's free-cancellation window, so a cancel screen can say what cancelling now
+    /// does to the money before anyone presses it — and a player can read the rule.
+    /// </summary>
+    [JsonPropertyName("freeCancelHours")]
+    public int FreeCancelHours { get; set; }
+
+    /// <summary>
     /// The venue's CliQ payment alias. Populated only for the venue's own side —
     /// owner, their staff, admin. Omitted from the payload entirely rather than
     /// sent as null, so a client cannot tell a stripped response from a venue
