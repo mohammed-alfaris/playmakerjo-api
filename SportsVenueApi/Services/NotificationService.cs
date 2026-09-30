@@ -189,6 +189,31 @@ public class NotificationService
         );
     }
 
+    /// <summary>
+    /// A venue owner filled in the website's sign-up form: that is a sales lead, and it goes to
+    /// every active admin so nobody has to remember to check the Leads page.
+    /// </summary>
+    public async Task NotifyNewVenueLead(VenueWaitlist lead)
+    {
+        var admins = await _db.Users
+            .Where(u => u.Role == "super_admin" && u.Status == "active")
+            .Select(u => u.Id)
+            .ToListAsync();
+        foreach (var adminId in admins)
+        {
+            await CreateNotification(
+                adminId,
+                Bi("New venue lead", "طلب انضمام ملعب جديد"),
+                Bi(
+                    $"{lead.VenueName} ({lead.City}) — {lead.ContactName}, {lead.Phone}",
+                    $"{lead.VenueName} ({lead.City}) — {lead.ContactName}، {lead.Phone}"
+                ),
+                "venue_lead",
+                lead.Id.ToString()
+            );
+        }
+    }
+
     public async Task NotifyProofReceived(Booking booking)
     {
         if (booking.Venue != null)

@@ -1,5 +1,4 @@
 using System;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -12,66 +11,41 @@ namespace SportsVenueApi.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.CreateTable(
-                name: "player_waitlist",
-                columns: table => new
-                {
-                    id = table.Column<int>(type: "int", nullable: false)
-                        .Annotation("MySql:ValueGenerationStrategy", MySqlValueGenerationStrategy.IdentityColumn),
-                    email = table.Column<string>(type: "varchar(255)", maxLength: 255, nullable: false)
-                        .Annotation("MySql:CharSet", "utf8mb4"),
-                    created_at = table.Column<DateTime>(type: "datetime(6)", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_player_waitlist", x => x.id);
-                })
-                .Annotation("MySql:CharSet", "utf8mb4");
+            // This migration shipped without its .Designer.cs, so EF never discovered it: a
+            // database built from migrations had no waitlist tables and the website's sign-up
+            // forms failed there. Production has the tables anyway (created before the file lost
+            // its attributes), so now that it is discoverable again it must not trip over them —
+            // hence raw CREATE TABLE IF NOT EXISTS instead of CreateTable. The shape is exactly
+            // the one the original CreateTable calls produced.
+            migrationBuilder.Sql(@"
+CREATE TABLE IF NOT EXISTS `player_waitlist` (
+    `id` int NOT NULL AUTO_INCREMENT,
+    `email` varchar(255) CHARACTER SET utf8mb4 NOT NULL,
+    `created_at` datetime(6) NOT NULL,
+    CONSTRAINT `PK_player_waitlist` PRIMARY KEY (`id`),
+    UNIQUE INDEX `IX_player_waitlist_email` (`email`)
+) CHARACTER SET=utf8mb4;");
 
-            migrationBuilder.CreateTable(
-                name: "venue_waitlist",
-                columns: table => new
-                {
-                    id = table.Column<int>(type: "int", nullable: false)
-                        .Annotation("MySql:ValueGenerationStrategy", MySqlValueGenerationStrategy.IdentityColumn),
-                    contact_name = table.Column<string>(type: "varchar(255)", maxLength: 255, nullable: false)
-                        .Annotation("MySql:CharSet", "utf8mb4"),
-                    venue_name = table.Column<string>(type: "varchar(255)", maxLength: 255, nullable: false)
-                        .Annotation("MySql:CharSet", "utf8mb4"),
-                    city = table.Column<string>(type: "varchar(100)", maxLength: 100, nullable: false)
-                        .Annotation("MySql:CharSet", "utf8mb4"),
-                    phone = table.Column<string>(type: "varchar(30)", maxLength: 30, nullable: false)
-                        .Annotation("MySql:CharSet", "utf8mb4"),
-                    email = table.Column<string>(type: "varchar(255)", maxLength: 255, nullable: false)
-                        .Annotation("MySql:CharSet", "utf8mb4"),
-                    sports = table.Column<string>(type: "longtext", nullable: false)
-                        .Annotation("MySql:CharSet", "utf8mb4"),
-                    created_at = table.Column<DateTime>(type: "datetime(6)", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_venue_waitlist", x => x.id);
-                })
-                .Annotation("MySql:CharSet", "utf8mb4");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_player_waitlist_email",
-                table: "player_waitlist",
-                column: "email",
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_venue_waitlist_email",
-                table: "venue_waitlist",
-                column: "email",
-                unique: true);
+            migrationBuilder.Sql(@"
+CREATE TABLE IF NOT EXISTS `venue_waitlist` (
+    `id` int NOT NULL AUTO_INCREMENT,
+    `contact_name` varchar(255) CHARACTER SET utf8mb4 NOT NULL,
+    `venue_name` varchar(255) CHARACTER SET utf8mb4 NOT NULL,
+    `city` varchar(100) CHARACTER SET utf8mb4 NOT NULL,
+    `phone` varchar(30) CHARACTER SET utf8mb4 NOT NULL,
+    `email` varchar(255) CHARACTER SET utf8mb4 NOT NULL,
+    `sports` longtext CHARACTER SET utf8mb4 NOT NULL,
+    `created_at` datetime(6) NOT NULL,
+    CONSTRAINT `PK_venue_waitlist` PRIMARY KEY (`id`),
+    UNIQUE INDEX `IX_venue_waitlist_email` (`email`)
+) CHARACTER SET=utf8mb4;");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(name: "player_waitlist");
-            migrationBuilder.DropTable(name: "venue_waitlist");
+            migrationBuilder.Sql("DROP TABLE IF EXISTS `player_waitlist`;");
+            migrationBuilder.Sql("DROP TABLE IF EXISTS `venue_waitlist`;");
         }
     }
 }
