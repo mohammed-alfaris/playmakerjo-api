@@ -1,9 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using SportsVenueApi.Constants;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Bookings;
+using SportsVenueApi.Data;
+using SportsVenueApi.Helpers;
 using SportsVenueApi.Jobs;
 using SportsVenueApi.Models;
 using SportsVenueApi.Tests.Infrastructure;
@@ -244,6 +247,39 @@ public class BookingExpiryTests
         Assert.Equal("cancelled", booking!.Status);
         Assert.NotNull(booking.AutoCancelledAt);
         Assert.Null(booking.PaymentDeadlineAt);
+    }
+
+    private async Task<int> NoticesAbout(string bookingId)
+    {
+        using var scope = _fx.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Notifications.CountAsync(n => n.ReferenceId == bookingId);
+    }
+
+    [Fact]
+    public async Task AHoldForAFutureGame_IsReleasedWithANotice()
+    {
+        var (_, bookingId) = await UnpaidAppBooking("18:00");
+
+        await Sweep(LongAfter); // a day from now; the game is 17 days out
+
+        Assert.Equal("cancelled", (await _fx.LoadBooking(bookingId))!.Status);
+        Assert.Equal(1, await NoticesAbout(bookingId));
+    }
+
+    [Fact]
+    public async Task AHoldForAGameThatAlreadyStarted_IsReleasedQuietly()
+    {
+        // What switching the job on meets first: old unpaid holds for games long gone. They are
+        // released, but a "your booking was released" push about a past game is noise.
+        var (_, bookingId) = await UnpaidAppBooking("11:00");
+        var booking = await _fx.LoadBooking(bookingId);
+        var afterTheGame = PaymentDeadline.SlotStartUtc(booking!.Date, booking.StartTime)!.Value.AddHours(2);
+
+        await Sweep(afterTheGame);
+
+        Assert.Equal("cancelled", (await _fx.LoadBooking(bookingId))!.Status);
+        Assert.Equal(0, await NoticesAbout(bookingId));
     }
 
     [Fact]

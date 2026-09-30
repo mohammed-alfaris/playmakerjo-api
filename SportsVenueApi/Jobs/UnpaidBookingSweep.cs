@@ -137,6 +137,12 @@ public class UnpaidBookingSweep
         var sent = 0;
         foreach (var booking in victims)
         {
+            // Released quietly when the game has already started: "your hold was released"
+            // about a slot in the past tells the player nothing they can act on. This matters
+            // most the first time the job is switched on, when every old unpaid hold goes at once.
+            if (PaymentDeadline.SlotStartUtc(booking.Date, booking.StartTime) is { } start && start <= nowUtc)
+                continue;
+
             // Deliberately not passing ct. CreateNotification takes no CancellationToken and
             // its SaveChanges is unguarded; abandoning a half-sent notification during a
             // 30-second shutdown is worse than finishing a handful of small writes.
