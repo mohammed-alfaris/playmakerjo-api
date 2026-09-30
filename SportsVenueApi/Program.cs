@@ -73,6 +73,9 @@ builder.Services.AddScoped<AccessContext>();
 builder.Services.AddScoped<CompanyService>();
 builder.Services.AddScoped<BillingService>();
 builder.Services.AddScoped<AuditLog>();
+// Sign in with Apple: Apple's public keys (cached), and the token check that uses them.
+builder.Services.AddHttpClient<IAppleKeySource, AppleKeySource>();
+builder.Services.AddScoped<AppleIdentityValidator>();
 builder.Services.AddScoped<SportsVenueApi.Services.Reports.ReportScopeResolver>();
 builder.Services.AddScoped<SportsVenueApi.Services.Reports.ReportsService>();
 
@@ -224,6 +227,21 @@ builder.Services.AddRateLimiter(options =>
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = authLimit,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+
+    // Refresh gets its own, wider budget. It only ever succeeds with a valid signed token, so
+    // the tight login limit protects nothing there — and phones share addresses: a mobile
+    // carrier puts many subscribers behind one IP, and the app refreshes every 15 minutes
+    // per person. Under the login limit, busy hours would sign app users out.
+    var refreshLimit = builder.Configuration.GetValue("RateLimiting:Refresh:PermitLimit", 60);
+    options.AddPolicy("refresh", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = refreshLimit,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0
             }));

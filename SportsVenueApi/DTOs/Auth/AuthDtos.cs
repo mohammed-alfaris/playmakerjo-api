@@ -60,12 +60,33 @@ public class LoginData
 
     [JsonPropertyName("accessToken")]
     public string AccessToken { get; set; } = "";
+
+    /// <summary>
+    /// Only for the mobile app (X-Client: mobile), which has no cookie jar and keeps it in the
+    /// device's secure storage. Browsers never see it: theirs stays in the httpOnly cookie,
+    /// out of reach of page scripts.
+    /// </summary>
+    [JsonPropertyName("refreshToken")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RefreshToken { get; set; }
 }
 
 public class TokenData
 {
     [JsonPropertyName("accessToken")]
     public string AccessToken { get; set; } = "";
+
+    /// <summary>A fresh refresh token for the mobile app: each refresh extends the session.</summary>
+    [JsonPropertyName("refreshToken")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RefreshToken { get; set; }
+}
+
+public class RefreshRequest
+{
+    /// <summary>The mobile app sends its refresh token here; browsers send the cookie instead.</summary>
+    [JsonPropertyName("refreshToken")]
+    public string? RefreshToken { get; set; }
 }
 
 public class RegisterRequest
@@ -114,4 +135,25 @@ public class GoogleSignInRequest
 {
     [JsonPropertyName("idToken")]
     public string IdToken { get; set; } = "";
+}
+
+public class DeleteAccountRequest
+{
+    /// <summary>Required when the account has a password; Google-only accounts have none.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("password")]
+    public string? Password { get; set; }
+}
+
+public class AppleSignInRequest
+{
+    /// <summary>The identity token (a JWT) from Sign in with Apple on the device.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("identityToken")]
+    public string IdentityToken { get; set; } = "";
+
+    /// <summary>
+    /// Apple gives the person's name to the app only on the very first sign-in, never in the
+    /// token, so the app forwards it here when it has it.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonPropertyName("name")]
+    public string? Name { get; set; }
 }
