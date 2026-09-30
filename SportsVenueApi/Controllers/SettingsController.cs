@@ -57,6 +57,9 @@ public class SettingsController : ControllerBase
     [Authorize(Roles = "super_admin")]
     public async Task<IActionResult> Update([FromBody] UpdateSettingsRequest req, CancellationToken ct)
     {
+        if (req.DefaultLimits is { } limits && (limits.MaxVenues < 0 || limits.MaxStaff < 0))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Limits cannot be negative." });
+
         if (req.PlatformFeePercentage is { } fee && (fee < 0 || fee > 100))
             return BadRequest(new ApiResponse<object>
             {
@@ -74,6 +77,11 @@ public class SettingsController : ControllerBase
                 row.MaintenanceMessageEn = req.MaintenanceMessageEn;
             if (req.MaintenanceMessageAr != null)
                 row.MaintenanceMessageAr = req.MaintenanceMessageAr;
+            if (req.DefaultLimits != null)
+            {
+                row.DefaultMaxVenues = req.DefaultLimits.MaxVenues;
+                row.DefaultMaxStaff = req.DefaultLimits.MaxStaff;
+            }
         }, ct);
 
         _logger.LogInformation(
@@ -93,6 +101,8 @@ public class SettingsController : ControllerBase
         MaintenanceMode = row.MaintenanceMode,
         MaintenanceMessageEn = row.MaintenanceMessageEn,
         MaintenanceMessageAr = row.MaintenanceMessageAr,
+        DefaultMaxVenues = row.DefaultMaxVenues,
+        DefaultMaxStaff = row.DefaultMaxStaff,
         UpdatedAt = row.UpdatedAt.ToString("o"),
     };
 }

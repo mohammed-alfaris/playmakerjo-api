@@ -103,6 +103,15 @@ public class Venue
     // false = all sports share the physical space — any booking blocks every
     // sport at that time.
     [Column("sports_isolated")]
+    /// <summary>
+    /// DEAD. Nothing reads this — it was persisted, echoed in the DTO and auto-assigned by
+    /// the venue form (as "this venue has more than one sport"), but no capacity, availability
+    /// or booking rule ever consulted it. The API surface and the client write are gone.
+    ///
+    /// The column stays because dropping it would be this project's first destructive
+    /// migration, and an unread nullable column costs nothing. Do not start using it without
+    /// deciding what it means first — the old auto-assigned values are meaningless.
+    /// </summary>
     public bool SportsIsolated { get; set; } = false;
 
     // Multi-pitch venues: a JSON array of physically independent pitches, each
@@ -111,6 +120,14 @@ public class Venue
     // which synthesises one implicit pitch per entry in Sports. See PitchDto.
     [Column("pitches", TypeName = "longtext")]
     public string PitchesJson { get; set; } = "[]";
+
+    /// <summary>Ids of the catalog features this venue offers. See <see cref="VenueFeature"/>.</summary>
+    [Column("feature_ids", TypeName = "longtext")]
+    public string FeatureIdsJson { get; set; } = "[]";
+
+    /// <summary>Features the owner typed that are not in the catalog. Private to this venue.</summary>
+    [Column("custom_features", TypeName = "longtext")]
+    public string CustomFeaturesJson { get; set; } = "[]";
 
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -123,6 +140,26 @@ public class Venue
     {
         get => System.Text.Json.JsonSerializer.Deserialize<List<string>>(SportsJson) ?? [];
         set => SportsJson = System.Text.Json.JsonSerializer.Serialize(value);
+    }
+
+    // Like every JSON accessor here, these build a new list on each read: assign the list
+    // back after changing it, or the change is lost.
+    [NotMapped]
+    public List<string> FeatureIds
+    {
+        get => string.IsNullOrWhiteSpace(FeatureIdsJson)
+            ? []
+            : System.Text.Json.JsonSerializer.Deserialize<List<string>>(FeatureIdsJson) ?? [];
+        set => FeatureIdsJson = System.Text.Json.JsonSerializer.Serialize(value ?? []);
+    }
+
+    [NotMapped]
+    public List<string> CustomFeatures
+    {
+        get => string.IsNullOrWhiteSpace(CustomFeaturesJson)
+            ? []
+            : System.Text.Json.JsonSerializer.Deserialize<List<string>>(CustomFeaturesJson) ?? [];
+        set => CustomFeaturesJson = System.Text.Json.JsonSerializer.Serialize(value ?? []);
     }
 
     [NotMapped]

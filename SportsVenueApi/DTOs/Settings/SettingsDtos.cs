@@ -19,6 +19,14 @@ public class SettingsResponse
     [JsonPropertyName("maintenanceMessageAr")]
     public string MaintenanceMessageAr { get; set; } = "";
 
+    /// <summary>Venue limit given to a new company. Null = unlimited.</summary>
+    [JsonPropertyName("defaultMaxVenues")]
+    public int? DefaultMaxVenues { get; set; }
+
+    /// <summary>Active-staff limit given to a new company. Null = unlimited.</summary>
+    [JsonPropertyName("defaultMaxStaff")]
+    public int? DefaultMaxStaff { get; set; }
+
     [JsonPropertyName("updatedAt")]
     public string UpdatedAt { get; set; } = "";
 }
@@ -28,6 +36,13 @@ public class SettingsResponse
 /// </summary>
 public class UpdateSettingsRequest
 {
+    /// <summary>
+    /// When present, BOTH defaults are set from it (null = unlimited). Applies to companies
+    /// created from now on; existing companies keep their own limits.
+    /// </summary>
+    [JsonPropertyName("defaultLimits")]
+    public SportsVenueApi.DTOs.Companies.LimitsRequest? DefaultLimits { get; set; }
+
     [JsonPropertyName("platformFeePercentage")]
     public double? PlatformFeePercentage { get; set; }
 

@@ -64,13 +64,71 @@ public static class TestEntities
         return (venue, pitchId);
     }
 
+    /// <summary>
+    /// A throwaway clerk linked to an employer. Prefer this over mutating the fixture's
+    /// seeded staff rows — those are shared by the whole suite, and a test that changes one
+    /// and restores it afterwards fails open if its assertion throws first.
+    /// </summary>
+    public static async Task<User> CreateStaff(
+        this DatabaseFixture fx, string ownerId, string permissions = "read")
+    {
+        var id = "u-" + Guid.NewGuid().ToString("N")[..8];
+        return await fx.Insert(new User
+        {
+            Id = id, Name = "Throwaway Clerk", Email = $"{id}@test.local",
+            Phone = "+962790002000", PasswordHash = BCrypt.Net.BCrypt.HashPassword(DatabaseFixture.TestPassword),
+            Role = "venue_staff", Status = "active",
+            Permissions = permissions, ManagedByOwnerId = ownerId
+        });
+    }
+
+    /// <summary>
+    /// Move a booking into the past. The API refuses to create one there, so this is the only
+    /// way to set up "a venue whose only bookings are history" — which is precisely the case
+    /// the venue-delete guard exists for.
+    /// </summary>
+    public static async Task BackdateBooking(this DatabaseFixture fx, string bookingId, DateTime date)
+    {
+        using var scope = fx.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var booking = await db.Bookings.FirstAsync(b => b.Id == bookingId);
+        booking.Date = date.Date;
+        await db.SaveChangesAsync();
+    }
+
+    public static async Task<User?> LoadUser(this DatabaseFixture fx, string id)
+    {
+        using var scope = fx.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id);
+    }
+
+    /// <summary>
+    /// A throwaway venue_owner whose password is DatabaseFixture.TestPassword.
+    ///
+    /// Needed because the seeded owners are shared by the whole suite: PayerAccessTests logs
+    /// in as them with that password, so a test that RESETS a seeded owner's password breaks
+    /// a different file with no obvious connection to it.
+    /// </summary>
+    public static async Task<User> CreateOwner(this DatabaseFixture fx)
+    {
+        var id = "u-" + Guid.NewGuid().ToString("N")[..8];
+        return await fx.Insert(new User
+        {
+            Id = id, Name = "Throwaway Owner", Email = $"{id}@test.local",
+            Phone = "+962790003000",
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(DatabaseFixture.TestPassword),
+            Role = "venue_owner", Status = "active"
+        });
+    }
+
     public static async Task<User> CreatePlayer(this DatabaseFixture fx)
     {
         var id = "u-" + Guid.NewGuid().ToString("N")[..8];
         return await fx.Insert(new User
         {
             Id = id, Name = "Throwaway Player", Email = $"{id}@test.local",
-            Phone = "+962790001000", PasswordHash = "never-logs-in",
+            Phone = "+962790001000", PasswordHash = BCrypt.Net.BCrypt.HashPassword(DatabaseFixture.TestPassword),
             Role = "player", Status = "active"
         });
     }
@@ -91,10 +149,28 @@ public static class TestEntities
         return await db.Bookings.AsNoTracking().FirstOrDefaultAsync(b => b.Id == id);
     }
 
+    public static async Task<Venue?> LoadVenue(this DatabaseFixture fx, string id)
+    {
+        using var scope = fx.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Venues.AsNoTracking().FirstOrDefaultAsync(v => v.Id == id);
+    }
+
     public static async Task<List<Booking>> LoadVenueBookings(this DatabaseFixture fx, string venueId)
     {
         using var scope = fx.Factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         return await db.Bookings.AsNoTracking().Where(b => b.VenueId == venueId).ToListAsync();
+    }
+
+    /// <summary>The ledger rows for one booking, oldest first — the order money arrived in.</summary>
+    public static async Task<List<Payment>> LoadPayments(this DatabaseFixture fx, string bookingId)
+    {
+        using var scope = fx.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Payments.AsNoTracking()
+            .Where(p => p.BookingId == bookingId)
+            .OrderBy(p => p.Date).ThenBy(p => p.Id)
+            .ToListAsync();
     }
 }

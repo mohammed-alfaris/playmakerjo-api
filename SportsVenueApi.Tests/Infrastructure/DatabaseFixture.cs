@@ -23,6 +23,19 @@ public class DatabaseFixture : IAsyncLifetime
     /// <summary>venue_owner who owns no venues.</summary>
     public string OwnerCId => "test-owner-c";
     public string PlayerId => "test-player";
+
+    /// <summary>venue_staff working for Owner A with "write" — the counter clerk.</summary>
+    public string StaffAWriteId => "test-staff-a-write";
+    /// <summary>venue_staff working for Owner A with "read" — may look, may not touch.</summary>
+    public string StaffAReadId => "test-staff-a-read";
+    /// <summary>venue_staff working for Owner B — used to prove staff cannot cross owners.</summary>
+    public string StaffBWriteId => "test-staff-b-write";
+    /// <summary>
+    /// venue_staff with NO owner link, as legacy rows created before staff→owner linking
+    /// existed will look. Must resolve to no access anywhere.
+    /// </summary>
+    public string StaffUnlinkedId => "test-staff-unlinked";
+
     public string VenueAId => "test-venue-a";
     public string VenueBId => "test-venue-b";
     /// <summary>Football venue with a subdividable 11-aside pitch (half 8, quarter 6).</summary>
@@ -63,7 +76,11 @@ public class DatabaseFixture : IAsyncLifetime
             new User { Id = OwnerAId, Name = "Test Owner A", Email = "owner-a@test.local", Phone = "+962790000002", PasswordHash = hash, Role = "venue_owner", Status = "active" },
             new User { Id = OwnerBId, Name = "Test Owner B", Email = "owner-b@test.local", Phone = "+962790000003", PasswordHash = hash, Role = "venue_owner", Status = "active" },
             new User { Id = OwnerCId, Name = "Test Owner C", Email = "owner-c@test.local", Phone = "+962790000004", PasswordHash = hash, Role = "venue_owner", Status = "active" },
-            new User { Id = PlayerId, Name = "Test Player", Email = "player@test.local", Phone = "+962790000005", PasswordHash = hash, Role = "player", Status = "active" });
+            new User { Id = PlayerId, Name = "Test Player", Email = "player@test.local", Phone = "+962790000005", PasswordHash = hash, Role = "player", Status = "active" },
+            new User { Id = StaffAWriteId, Name = "Staff A Write", Email = "staff-a-write@test.local", Phone = "+962790000006", PasswordHash = hash, Role = "venue_staff", Status = "active", Permissions = "write", ManagedByOwnerId = OwnerAId },
+            new User { Id = StaffAReadId, Name = "Staff A Read", Email = "staff-a-read@test.local", Phone = "+962790000007", PasswordHash = hash, Role = "venue_staff", Status = "active", Permissions = "read", ManagedByOwnerId = OwnerAId },
+            new User { Id = StaffBWriteId, Name = "Staff B Write", Email = "staff-b-write@test.local", Phone = "+962790000008", PasswordHash = hash, Role = "venue_staff", Status = "active", Permissions = "write", ManagedByOwnerId = OwnerBId },
+            new User { Id = StaffUnlinkedId, Name = "Staff Unlinked", Email = "staff-unlinked@test.local", Phone = "+962790000009", PasswordHash = hash, Role = "venue_staff", Status = "active", Permissions = "write", ManagedByOwnerId = null });
         await db.SaveChangesAsync();
 
         // Daily 08:00–23:00 — full day-name keys, matching the dashboard editor and SeedData.

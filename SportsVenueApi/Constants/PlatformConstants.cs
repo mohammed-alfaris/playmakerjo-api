@@ -12,5 +12,13 @@ public static class PlatformConstants
     /// local time. Without this helper, evenings in Jordan (after 21:00 local)
     /// see "today" rejected as "in the past" because UTC has already moved on.
     /// </summary>
-    public static DateTime JordanToday() => DateTime.UtcNow.AddHours(3).Date;
+    public static DateTime JordanToday() => DateTime.UtcNow.AddHours(JordanUtcOffsetHours).Date;
+
+    /// <summary>
+    /// Jordan abolished daylight saving in 2022 and sits permanently at UTC+3, so a single
+    /// constant is correct rather than a lazy approximation. Extracted so the one place
+    /// that converts a stored slot ("2026-08-04" + "18:00", both Jordan-local) into a real
+    /// UTC instant cannot drift from <see cref="JordanToday"/>.
+    /// </summary>
+    public const int JordanUtcOffsetHours = 3;
 }

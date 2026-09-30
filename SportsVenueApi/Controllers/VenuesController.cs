@@ -7,9 +7,11 @@ using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Bookings;
+using SportsVenueApi.DTOs.VenueFeatures;
 using SportsVenueApi.DTOs.Venues;
 using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
+using SportsVenueApi.Services;
 
 namespace SportsVenueApi.Controllers;
 
@@ -20,17 +22,56 @@ public class VenuesController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly string _uploadsBaseUrl;
+    private readonly AccessContext _access;
+    private readonly CompanyService _companies;
 
-    public VenuesController(AppDbContext db, IConfiguration config)
+    public VenuesController(AppDbContext db, IConfiguration config, AccessContext access, CompanyService companies)
     {
         _db = db;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
+        _access = access;
+        _companies = companies;
     }
+
+    /// <summary>A venue can only belong to a real owner. Null when it can, else the refusal.</summary>
+    private async Task<string?> ValidateOwnerAsync(string ownerId) =>
+        await _db.Users.AnyAsync(u => u.Id == ownerId && u.Role == "venue_owner")
+            ? null
+            : "owner_id must reference an existing venue owner.";
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
     private string UserRole => User.FindFirstValue(ClaimTypes.Role) ?? "";
 
-    private VenueResponse ToDto(Venue v) => new()
+    /// <summary>
+    /// The venue as an outsider may see it: everything needed to browse, compare and book,
+    /// with the owner's CliQ alias removed.
+    ///
+    /// The alias is the owner's payment identifier — the string customers transfer money to.
+    /// It was reachable with NO authentication at all through /venues/public and
+    /// /venues/public/{id}, and venue ids are enumerable from the list route, so every
+    /// alias on the platform could be harvested in one pass. It is not a secret in the way
+    /// a password is (a paying customer must see it), but bulk-harvestable is a different
+    /// thing from visible-to-someone-who-is-paying-you: it is exactly what is needed to
+    /// impersonate a venue and substitute a different alias.
+    ///
+    /// Stripping it here rather than in each route is deliberate. Three anonymous endpoints
+    /// serve this shape today and the fourth that gets added next year will be safe by
+    /// default — the leak happened because a route forgot, not because anyone decided.
+    /// </summary>
+    private VenueResponse ToPublicDto(Venue v, IReadOnlyDictionary<string, VenueFeature> catalog)
+    {
+        var dto = ToDto(v, catalog);
+        // Verified by removal: commenting this single line fails five of the seven
+        // VenueDetailLeakTests, including the anonymous ones.
+        dto.CliqAlias = null;
+        return dto;
+    }
+
+    /// <param name="catalog">
+    /// Every catalog feature keyed by id, from <see cref="LoadFeatureCatalogAsync"/>. Required rather
+    /// than looked up inside, so a new route cannot quietly return venues with no features.
+    /// </param>
+    private VenueResponse ToDto(Venue v, IReadOnlyDictionary<string, VenueFeature> catalog) => new()
     {
         Id = v.Id,
         Name = v.Name,
@@ -57,10 +98,47 @@ public class VenuesController : ControllerBase
         SubSizes = v.SubSizes,
         SizePrices = v.SizePrices,
         SportsConfig = v.SportsConfig,
-        SportsIsolated = v.SportsIsolated,
         Pitches = PitchSizes.ResolvedPitches(v),
+        Features = ResolveFeatures(v, catalog),
+        CustomFeatures = v.CustomFeatures,
         CreatedAt = v.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
     };
+
+    /// <summary>
+    /// The whole catalog, retired features included: a venue that chose a feature before it was
+    /// retired keeps showing it. One small query per request.
+    /// </summary>
+    private Task<Dictionary<string, VenueFeature>> LoadFeatureCatalogAsync() =>
+        _db.VenueFeatures.AsNoTracking().ToDictionaryAsync(f => f.Id);
+
+    /// <summary>
+    /// A venue's stored ids as name + icon, in catalog order. An id with no catalog row — only
+    /// possible if the row was removed by hand, since the API refuses to delete a feature in
+    /// use — is dropped rather than shown as a bare id.
+    /// </summary>
+    private static List<VenueFeatureRef> ResolveFeatures(Venue v, IReadOnlyDictionary<string, VenueFeature> catalog) =>
+        v.FeatureIds
+            .Select(id => catalog.GetValueOrDefault(id))
+            .OfType<VenueFeature>()
+            .OrderBy(f => f.SortOrder)
+            .ThenBy(f => f.NameEn)
+            .Select(f => new VenueFeatureRef { Id = f.Id, Name = f.NameEn, NameAr = f.NameAr, Icon = f.Icon })
+            .ToList();
+
+    /// <summary>
+    /// Narrow to venues offering EVERY listed feature — the same substring match the sport filter
+    /// uses on its JSON column, one condition per feature. Ids must already have passed
+    /// VenueFeatureRules.ParseFilter, which is what keeps LIKE wildcards out of the pattern.
+    /// </summary>
+    private static IQueryable<Venue> WithFeatures(IQueryable<Venue> query, IEnumerable<string> featureIds)
+    {
+        foreach (var id in featureIds)
+        {
+            var token = $"\"{id}\"";
+            query = query.Where(v => v.FeatureIdsJson.Contains(token));
+        }
+        return query;
+    }
 
     /// <summary>
     /// Validate + normalize a list of pitches for a venue: mint UUIDs for new pitches,
@@ -201,9 +279,14 @@ public class VenuesController : ControllerBase
         [FromQuery] int limit = 20,
         [FromQuery] string? search = null,
         [FromQuery] string? sport = null,
-        [FromQuery] string? city = null)
+        [FromQuery] string? city = null,
+        [FromQuery] string? features = null)
     {
-        var baseQuery = _db.Venues.Where(v => v.Status == "active");
+        var featureErr = VenueFeatureRules.ParseFilter(features, out var featureIds);
+        if (featureErr != null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = featureErr });
+
+        var baseQuery = WithFeatures(_db.Venues.Where(v => v.Status == "active"), featureIds);
 
         if (!string.IsNullOrEmpty(search))
             baseQuery = baseQuery.Where(v => EF.Functions.Like(v.Name, $"%{search}%")
@@ -224,7 +307,8 @@ public class VenuesController : ControllerBase
             .Take(limit)
             .ToListAsync();
 
-        var dtos = venues.Select(ToDto).ToList();
+        var catalog = await LoadFeatureCatalogAsync();
+        var dtos = venues.Select(v => ToPublicDto(v, catalog)).ToList();
         await StampAggregatesAsync(dtos);
 
         return Ok(new ApiResponse<List<VenueResponse>>
@@ -245,7 +329,7 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        var dto = ToDto(venue);
+        var dto = ToPublicDto(venue, await LoadFeatureCatalogAsync());
         await StampAggregateAsync(dto);
         return Ok(new ApiResponse<VenueResponse> { Data = dto });
     }
@@ -262,6 +346,7 @@ public class VenuesController : ControllerBase
         [FromQuery] int duration = 60,
         [FromQuery] string? sport = null,
         [FromQuery] string? city = null,
+        [FromQuery] string? features = null,
         [FromQuery] int page = 1,
         [FromQuery] int limit = 20)
     {
@@ -278,7 +363,11 @@ public class VenuesController : ControllerBase
         if (limit < 1) limit = 20;
         if (limit > 50) limit = 50;
 
-        var baseQuery = _db.Venues.Where(v => v.Status == "active");
+        var featureErr = VenueFeatureRules.ParseFilter(features, out var featureIds);
+        if (featureErr != null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = featureErr });
+
+        var baseQuery = WithFeatures(_db.Venues.Where(v => v.Status == "active"), featureIds);
 
         if (!string.IsNullOrEmpty(sport))
             baseQuery = baseQuery.Where(v => v.SportsJson.Contains($"\"{sport}\""));
@@ -317,10 +406,11 @@ public class VenuesController : ControllerBase
         }).ToList();
 
         var total = available.Count;
+        var catalog = await LoadFeatureCatalogAsync();
         var dtos = available
             .Skip((page - 1) * limit)
             .Take(limit)
-            .Select(ToDto)
+            .Select(v => ToPublicDto(v, catalog))
             .ToList();
         await StampAggregatesAsync(dtos);
 
@@ -340,14 +430,28 @@ public class VenuesController : ControllerBase
         [FromQuery] string? status = null,
         [FromQuery] string? owner_id = null)
     {
-        var ownerId = owner_id;
-        if (UserRole == "venue_owner")
-            ownerId = UserId;
-
+        // Deny-by-default. The old shape pinned ownerId only for venue_owner and then
+        // applied the filter only when it was non-empty, so a player or a staff account
+        // received every venue on the platform — including competitors' pricing and CliQ
+        // aliases. Public discovery lives on the [AllowAnonymous] /venues/public routes;
+        // this one is the back office.
         var baseQuery = _db.Venues.AsQueryable();
 
-        if (!string.IsNullOrEmpty(ownerId))
-            baseQuery = baseQuery.Where(v => v.OwnerId == ownerId);
+        if (UserRole == "super_admin")
+        {
+            if (!string.IsNullOrEmpty(owner_id))
+                baseQuery = baseQuery.Where(v => v.OwnerId == owner_id);
+        }
+        else if (_access.CompanyId != null)
+        {
+            // Owners see their own; staff see their employer's venues within their scope.
+            // The query string is ignored.
+            baseQuery = _access.ScopeVenues(baseQuery);
+        }
+        else
+        {
+            return Forbid();
+        }
 
         if (!string.IsNullOrEmpty(search))
             baseQuery = baseQuery.Where(v => EF.Functions.Like(v.Name, $"%{search}%")
@@ -368,7 +472,8 @@ public class VenuesController : ControllerBase
             .Take(limit)
             .ToListAsync();
 
-        var dtos = venues.Select(ToDto).ToList();
+        var catalog = await LoadFeatureCatalogAsync();
+        var dtos = venues.Select(v => ToDto(v, catalog)).ToList();
         await StampAggregatesAsync(dtos);
 
         return Ok(new ApiResponse<List<VenueResponse>>
@@ -387,6 +492,11 @@ public class VenuesController : ControllerBase
         var ownerId = req.OwnerId ?? UserId;
         if (UserRole == "venue_owner")
             ownerId = UserId;
+
+        // An admin naming an owner used to be taken on trust, so a venue could be created for a
+        // player — or for no one. It must now be a real owner, since it counts against their limit.
+        if (await ValidateOwnerAsync(ownerId) is { } badOwner)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = badOwner });
 
         // Split config is football-only — reject split settings on non-football venues.
         var scopeErr = ValidateSplitScope(req.Sports, req.ParentSize, req.SportsConfig);
@@ -436,6 +546,11 @@ public class VenuesController : ControllerBase
         if (pitchErr != null)
             return BadRequest(new ApiResponse<object> { Success = false, Message = pitchErr });
 
+        var catalog = await LoadFeatureCatalogAsync();
+        var chosen = VenueFeatureRules.Normalize(req.FeatureIds, req.CustomFeatures, catalog, alreadyAttached: []);
+        if (chosen.Error != null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = chosen.Error });
+
         var venue = new Venue
         {
             Name = req.Name,
@@ -456,7 +571,9 @@ public class VenuesController : ControllerBase
             CliqAlias = req.CliqAlias,
             ParentSize = req.ParentSize,
             SubSizes = req.SubSizes ?? [],
-            SizePrices = req.SizePrices ?? []
+            SizePrices = req.SizePrices ?? [],
+            FeatureIds = chosen.FeatureIds,
+            CustomFeatures = chosen.CustomFeatures
         };
         if (req.OperatingHours != null)
             venue.OperatingHoursJson = JsonSerializer.Serialize(req.OperatingHours);
@@ -468,18 +585,26 @@ public class VenuesController : ControllerBase
             venue.DepositPercentage = req.DepositPercentage.Value;
         if (req.SportsConfig != null)
             venue.SportsConfig = req.SportsConfig;
-        if (req.SportsIsolated.HasValue)
-            venue.SportsIsolated = req.SportsIsolated.Value;
         if (req.Pitches != null)
             venue.Pitches = req.Pitches;
 
-        _db.Venues.Add(venue);
-        await _db.SaveChangesAsync();
+        // The limit check and the insert share one transaction, holding the company row lock,
+        // so two creates racing at the limit cannot both get in.
+        await _companies.EnsureAsync(ownerId);
+        await using (var tx = await _db.Database.BeginTransactionAsync())
+        {
+            if (await _companies.LockAndCheckVenueRoomAsync(ownerId) is { } full)
+                return Conflict(new ApiResponse<object> { Success = false, Message = full });
+
+            _db.Venues.Add(venue);
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+        }
 
         // Reload with owner
         var created = await _db.Venues.Include(v => v.Owner).FirstAsync(v => v.Id == venue.Id);
 
-        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(created), Message = "Venue created" });
+        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(created, catalog), Message = "Venue created" });
     }
 
     [HttpGet("{venueId}")]
@@ -489,7 +614,15 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        var dto = ToDto(venue);
+        // Not 403 for a non-owner: a player legitimately opens a venue page to book it.
+        // What changes is WHICH shape they get. This route had no ownership check at all,
+        // so any logged-in account — including a competing venue owner — could read another
+        // venue's CliQ alias by id, and ids are enumerable from the public list.
+        var catalog = await LoadFeatureCatalogAsync();
+        var dto = _access.CanSeeVenue(venue)
+            ? ToDto(venue, catalog)
+            : ToPublicDto(venue, catalog);
+
         await StampAggregateAsync(dto);
         return Ok(new ApiResponse<VenueResponse> { Data = dto });
     }
@@ -501,14 +634,24 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        if (!VenueAccess.CanManage(venue, UserId, UserRole))
+        if (!_access.CanManageVenue(venue))
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to manage this venue" });
 
         // Ownership reassignment is admin-only. Echoing back the current owner is a no-op.
+        // Moving a venue into a company counts against that company's limit, so the check holds
+        // the receiving company's lock until this update is saved.
+        await using var reassignTx = req.OwnerId != null && req.OwnerId != venue.OwnerId && _access.IsAdmin
+            ? await _db.Database.BeginTransactionAsync()
+            : null;
         if (req.OwnerId != null && req.OwnerId != venue.OwnerId)
         {
             if (UserRole != "super_admin")
                 return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Only admins can reassign venue ownership" });
+            if (await ValidateOwnerAsync(req.OwnerId) is { } badOwner)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = badOwner });
+            await _companies.EnsureAsync(req.OwnerId);
+            if (await _companies.LockAndCheckVenueRoomAsync(req.OwnerId) is { } full)
+                return Conflict(new ApiResponse<object> { Success = false, Message = full });
             venue.OwnerId = req.OwnerId;
         }
 
@@ -531,6 +674,24 @@ public class VenuesController : ControllerBase
         if (req.MinBookingDuration.HasValue) venue.MinBookingDuration = req.MinBookingDuration.Value;
         if (req.MaxBookingDuration.HasValue) venue.MaxBookingDuration = req.MaxBookingDuration.Value;
         if (req.DepositPercentage.HasValue) venue.DepositPercentage = req.DepositPercentage.Value;
+
+        // Either list may be sent alone. The other keeps its stored value, and a typed label
+        // that matches the catalog still lands in FeatureIds — so both are always rewritten.
+        var catalog = await LoadFeatureCatalogAsync();
+        if (req.FeatureIds != null || req.CustomFeatures != null)
+        {
+            var existingIds = venue.FeatureIds;
+            var chosen = VenueFeatureRules.Normalize(
+                req.FeatureIds ?? existingIds,
+                req.CustomFeatures ?? venue.CustomFeatures,
+                catalog,
+                alreadyAttached: existingIds);
+            if (chosen.Error != null)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = chosen.Error });
+
+            venue.FeatureIds = chosen.FeatureIds;
+            venue.CustomFeatures = chosen.CustomFeatures;
+        }
 
         // Pitch-size fields — validate together if any of them is being updated
         if (req.ParentSize != null || req.SubSizes != null || req.SizePrices != null)
@@ -589,15 +750,56 @@ public class VenuesController : ControllerBase
             venue.SportsConfig = req.SportsConfig;
         }
 
-        if (req.SportsIsolated.HasValue)
-            venue.SportsIsolated = req.SportsIsolated.Value;
-
         // Multi-pitch: validate + normalize before writing.
         if (req.Pitches != null)
         {
             var pitchErr = ValidateAndNormalizePitches(req.Pitches);
             if (pitchErr != null)
                 return BadRequest(new ApiResponse<object> { Success = false, Message = pitchErr });
+
+            // Refuse to strand live bookings on a pitch that is being deleted.
+            //
+            // This is a double-sell, not a display bug. Every conflict filter matches a
+            // booking to a pitch by exact id — AvailabilityHelper.MatchesPitch:195,
+            // BookingsController.BookingOnPitch:1657, PermanentBookingsController:329 — and
+            // the legacy "first pitch of this sport" fallback fires only for a NULL pitch_id,
+            // never for a dangling one. So a booking whose pitch has been removed stops
+            // matching any pitch, drops out of every capacity sum, and the hour it occupies
+            // is offered for sale again while the customer still holds it.
+            //
+            // Read venue.Pitches BEFORE the assignment below: it is a [NotMapped] getter that
+            // re-deserialises the JSON column on each access, so afterwards the old list is
+            // simply gone.
+            var keptIds = req.Pitches.Select(p => p.Id!).ToHashSet(StringComparer.Ordinal);
+            var removedIds = venue.Pitches
+                .Select(p => p.Id!)
+                .Where(id => !string.IsNullOrEmpty(id) && !keptIds.Contains(id))
+                .ToList();
+
+            if (removedIds.Count > 0)
+            {
+                // Only the future contends for a slot. Past bookings keep their dead pitch id
+                // — they are history — so a pitch can still be retired once its diary is clear.
+                var today = PlatformConstants.JordanToday();
+                var liveBookings = await _db.Bookings.CountAsync(b =>
+                    b.VenueId == venue.Id
+                    && b.PitchId != null && removedIds.Contains(b.PitchId)
+                    && b.Status != "cancelled"
+                    && b.Date >= today);
+                var livePerms = await _db.PermanentBookings.CountAsync(p =>
+                    p.VenueId == venue.Id
+                    && p.PitchId != null && removedIds.Contains(p.PitchId)
+                    && p.Status == "active");
+
+                if (liveBookings + livePerms > 0)
+                    return Conflict(new ApiResponse<object>
+                    {
+                        Success = false,
+                        Message = $"Cannot remove that pitch: {liveBookings} upcoming booking(s) and " +
+                                  $"{livePerms} standing reservation(s) still use it. Cancel or move them first."
+                    });
+            }
+
             venue.Pitches = req.Pitches;
         }
 
@@ -608,12 +810,13 @@ public class VenuesController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = scopeErr });
 
         await _db.SaveChangesAsync();
+        if (reassignTx != null) await reassignTx.CommitAsync();
 
         // Reload owner if changed
         if (req.OwnerId != null)
             await _db.Entry(venue).Reference(v => v.Owner).LoadAsync();
 
-        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(venue), Message = "Venue updated" });
+        return Ok(new ApiResponse<VenueResponse> { Data = ToDto(venue, catalog), Message = "Venue updated" });
     }
 
     [HttpDelete("{venueId}")]
@@ -623,8 +826,37 @@ public class VenuesController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        if (!VenueAccess.CanManage(venue, UserId, UserRole))
+        if (!_access.CanManageVenue(venue))
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to manage this venue" });
+
+        // Every foreign key pointing at a venue is ON DELETE CASCADE, so this one call also
+        // destroys, irreversibly and without asking:
+        //
+        //     bookings            -> every booking ever taken here
+        //       payments          -> and, through bookings, the append-only ledger itself
+        //     permanent_bookings, recurring_booking_groups, reviews, favorites
+        //
+        // Only an ownership check stood in front of that. The pitch-removal guard above
+        // counts only FUTURE bookings, because retiring a pitch merely strands history and
+        // history is allowed to keep a dead pitch id. That reasoning does not transfer here:
+        // a past booking is exactly the row carrying the money, so ANY non-cancelled booking
+        // blocks the delete regardless of date.
+        //
+        // A venue that has traded is not something you delete. Deactivating it takes it off
+        // every public route while the history and the ledger stay intact, which is what the
+        // person clicking Delete almost always actually wants.
+        var bookings = await _db.Bookings.CountAsync(b => b.VenueId == venue.Id && b.Status != "cancelled");
+        var permanents = await _db.PermanentBookings.CountAsync(p => p.VenueId == venue.Id && p.Status == "active");
+
+        if (bookings + permanents > 0)
+            return Conflict(new ApiResponse<object>
+            {
+                Success = false,
+                Message = $"Cannot delete this venue: it has {bookings} booking(s) and {permanents} " +
+                          "standing reservation(s), and deleting it would erase them and their payment " +
+                          "records permanently. Set the venue's status to inactive instead — it stops " +
+                          "appearing publicly and keeps the history."
+            });
 
         _db.Venues.Remove(venue);
         await _db.SaveChangesAsync();
@@ -668,9 +900,11 @@ public class VenuesController : ControllerBase
         // as additional booked slots without ever materialising into the bookings
         // table.
         var dow = (int)bookingDate.DayOfWeek;
-        var activePermanents = await _db.PermanentBookings
-            .Where(p => p.VenueId == venueId && p.Status == "active" && p.DayOfWeek == dow)
-            .ToListAsync();
+        var activePermanents = StandingOccurrence.NotYetRecorded(
+            await _db.PermanentBookings
+                .Where(p => p.VenueId == venueId && p.Status == "active" && p.DayOfWeek == dow)
+                .ToListAsync(),
+            existingBookings);
 
         var pitches = PitchSizes.ResolvedPitches(venue);
 
@@ -698,8 +932,11 @@ public class VenuesController : ControllerBase
                 Duration = b.Duration,
                 Sport = b.Sport,
                 PitchId = b.PitchId,
-                PitchSize = b.PitchSize ?? parent,
-                UnitWeight = PitchSizes.WeightOf(b.PitchSize ?? parent)
+                // Resolved from the pitch: `parent` is the venue's FOOTBALL size, so handing it
+                // to a padel booking both mislabelled it and overweighted it — 2 units for a
+                // "7" venue, 4 for an "11" one, against a real cost of 1.
+                PitchSize = b.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, b.PitchId),
+                UnitWeight = PitchSizes.WeightOf(b.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, b.PitchId))
             })
             .OrderBy(s => s.StartTime)
             .ToList();
@@ -714,8 +951,8 @@ public class VenuesController : ControllerBase
                 Duration = p.Duration,
                 Sport = null,
                 PitchId = p.PitchId,
-                PitchSize = p.PitchSize ?? parent,
-                UnitWeight = PitchSizes.WeightOf(p.PitchSize ?? parent)
+                PitchSize = p.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, p.PitchId),
+                UnitWeight = PitchSizes.WeightOf(p.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, p.PitchId))
             }));
         legacyBookedSlots = legacyBookedSlots.OrderBy(s => s.StartTime).ToList();
 
@@ -873,7 +1110,7 @@ public class VenuesController : ControllerBase
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
         // Stats include revenue — only the venue's owner or an admin may read them.
-        if (!VenueAccess.CanManage(venue, UserId, UserRole))
+        if (!_access.CanManageVenue(venue))
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to view this venue's stats" });
 
         var totalBookings = await _db.Bookings.CountAsync(b => b.VenueId == venueId);

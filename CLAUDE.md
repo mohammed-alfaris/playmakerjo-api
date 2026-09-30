@@ -98,7 +98,11 @@ API docs: `http://localhost:8000/openapi/v1.json`
 - Refresh token: JWT, 7 days expiry, httpOnly cookie
 - `POST /api/v1/auth/refresh` → reads cookie → returns new access token
 - `POST /api/v1/auth/logout` → clears cookie
-- Three roles: `super_admin`, `venue_owner`, `player`
+- Four roles: `super_admin`, `venue_owner`, `venue_staff`, `player`
+- `venue_staff` is a counter clerk. Scope comes from `managed_by_owner_id` (their employer)
+  plus `permissions` (`"read"` | `"write"`), both carried as JWT claims and both enforced
+  through `Helpers/VenueAccess.cs` — `CanView` for reads, `CanWrite` for anything that
+  changes a booking. A staff row with no employer link reaches nothing.
 - Rate limiting on auth endpoints
 
 ---

@@ -5,8 +5,11 @@ using Microsoft.EntityFrameworkCore;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Auth;
+using SportsVenueApi.DTOs.Staff;
 using SportsVenueApi.DTOs.Users;
 using SportsVenueApi.Helpers;
+using SportsVenueApi.Models;
+using SportsVenueApi.Services;
 using BCrypt.Net;
 
 namespace SportsVenueApi.Controllers;
@@ -18,10 +21,18 @@ public class UsersController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly string _uploadsBaseUrl;
+    private readonly ILogger<UsersController> _logger;
+    private readonly AccessContext _access;
+    private readonly CompanyService _companies;
 
-    public UsersController(AppDbContext db, IConfiguration config)
+    public UsersController(
+        AppDbContext db, IConfiguration config, ILogger<UsersController> logger,
+        AccessContext access, CompanyService companies)
     {
         _db = db;
+        _logger = logger;
+        _access = access;
+        _companies = companies;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
     }
 
@@ -38,17 +49,93 @@ public class UsersController : ControllerBase
         Status = u.Status,
         Avatar = UploadUrlHelper.Normalize(u.Avatar, _uploadsBaseUrl),
         Permissions = u.Permissions,
+        ManagedByOwnerId = u.ManagedByOwnerId,
+        StaffRole = u.Role == "venue_staff" && u.StaffRole != null
+            ? new StaffRoleRef { Id = u.StaffRole.Id, Name = u.StaffRole.Name }
+            : null,
+        AllVenues = u.Role == "venue_staff" ? u.StaffAllVenues : null,
+        VenueIds = u.Role == "venue_staff" && !u.StaffAllVenues ? u.StaffVenueIds : null,
         CreatedAt = u.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
     };
+
+    /// <summary>
+    /// Set a staff member's role and venue scope, checking both belong to their company.
+    /// Returns an error message, or null when applied. Does not save.
+    ///
+    /// A role or venue from another company is refused rather than ignored: silently dropping
+    /// it would leave the clerk with less access than the owner just granted, and no sign why.
+    /// </summary>
+    private async Task<string?> ApplyStaffAssignmentAsync(
+        User staff, string companyId, string? roleId, bool? allVenues, List<string>? venueIds,
+        bool isNew, string? legacyLevel)
+    {
+        if (!string.IsNullOrWhiteSpace(roleId))
+        {
+            var role = await _db.StaffRoles.FirstOrDefaultAsync(r => r.Id == roleId && r.OwnerId == companyId);
+            if (role == null) return "That role does not exist.";
+            staff.StaffRoleId = role.Id;
+            staff.StaffRole = role;
+        }
+        else if (isNew)
+        {
+            var role = await _companies.LegacyRoleAsync(companyId, legacyLevel);
+            staff.StaffRoleId = role?.Id;
+            staff.StaffRole = role;
+        }
+
+        // Naming venues means "only these", even without allVenues:false spelled out.
+        var limitToVenues = allVenues == false || (allVenues == null && venueIds != null);
+        if (allVenues == true)
+        {
+            staff.StaffAllVenues = true;
+            staff.StaffVenueIds = [];
+        }
+        else if (limitToVenues)
+        {
+            var wanted = (venueIds ?? []).Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().ToList();
+            if (wanted.Count == 0) return "Choose at least one venue, or give access to all venues.";
+
+            var owned = await _db.Venues
+                .Where(v => v.OwnerId == companyId && wanted.Contains(v.Id))
+                .Select(v => v.Id)
+                .ToListAsync();
+            if (owned.Count != wanted.Count) return "One of those venues is not yours.";
+
+            staff.StaffAllVenues = false;
+            staff.StaffVenueIds = wanted;
+        }
+
+        return null;
+    }
 
     [HttpGet("me")]
     public async Task<IActionResult> GetMe()
     {
-        var user = await _db.Users.FindAsync(UserId);
+        var user = await _db.Users.Include(u => u.StaffRole).FirstOrDefaultAsync(u => u.Id == UserId);
         if (user == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
 
-        return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "OK" });
+        var dto = ToDto(user);
+        // Staff always get an answer, empty when they have no company (suspended, unlinked, or
+        // their employer is banned) — omitting it would read to the dashboard as "not loaded
+        // yet" and it would fall back to their old read/write level.
+        if (_access.CompanyId != null || _access.IsAdmin || _access.IsStaff)
+        {
+            var company = _access.CompanyId == null ? null : await _companies.EnsureAsync(_access.CompanyId);
+            dto.Access = new AccessSummary
+            {
+                CompanyId = company?.OwnerId,
+                CompanyName = company?.Name,
+                StaffRole = _access.IsStaff && _access.StaffRoleId != null
+                    ? new StaffRoleRef { Id = _access.StaffRoleId, Name = _access.StaffRoleName ?? "" }
+                    : null,
+                Permissions = _access.Permissions.ToList(),
+                AllVenues = (_access.IsAdmin || _access.CompanyId != null) && _access.RestrictedVenueIds == null,
+                VenueIds = _access.RestrictedVenueIds?.ToList() ?? [],
+            };
+        }
+
+        return Ok(new ApiResponse<UserResponse> { Data = dto, Message = "OK" });
     }
 
     [HttpPatch("me")]
@@ -59,7 +146,38 @@ public class UsersController : ControllerBase
             return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
 
         if (req.Name != null) user.Name = req.Name.Trim();
-        if (req.Phone != null) user.Phone = req.Phone.Trim();
+
+        // The phone is an identity key, not a display field: an app booking resolves
+        // the venue's customer record from it. Written raw and unchecked, anyone could
+        // type a regular's number, book a slot, and have their bookings — and their
+        // no-shows — merge into that person's history at the venue.
+        //
+        // Normalising here means the value is compared in the same canonical form the
+        // customer book uses, so "0791234567" and "+962791234567" cannot be two people.
+        if (req.Phone != null && req.Phone.Trim() != user.Phone)
+        {
+            // Only validated when it actually changes: the dashboard PATCHes the whole
+            // profile back, and a user whose stored number predates this rule must still
+            // be able to edit their name.
+            var normalized = PhoneNormalizer.ToE164Jo(req.Phone);
+            if (normalized == null)
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "Enter a valid Jordanian mobile number."
+                });
+
+            var takenByAnother = await _db.Users
+                .AnyAsync(u => u.Id != user.Id && u.Phone == normalized);
+            if (takenByAnother)
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "That mobile number is already in use."
+                });
+
+            user.Phone = normalized;
+        }
         if (req.Avatar != null) user.Avatar = req.Avatar;
         if (req.PreferredLanguage != null && (req.PreferredLanguage == "en" || req.PreferredLanguage == "ar"))
             user.PreferredLanguage = req.PreferredLanguage;
@@ -100,6 +218,10 @@ public class UsersController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = "New password must be at least 8 characters" });
 
         user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.NewPassword);
+        // Changing your own password ends your other sessions too — which is the reason most
+        // people change one. Refresh tokens issued before this instant stop working; see
+        // AuthController.Refresh.
+        user.PasswordChangedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<object> { Message = "Password changed successfully" });
@@ -142,6 +264,105 @@ public class UsersController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// An owner's own staff. Separate from <see cref="List"/>, which is the platform-wide
+    /// user directory and stays admin-only — an owner must never be handed a list that
+    /// includes players, other owners, or a role dropdown. Until this existed an owner
+    /// could create staff via POST /users and then never see them again.
+    /// </summary>
+    [HttpGet("staff")]
+    public async Task<IActionResult> ListStaff(
+        [FromQuery] int page = 1,
+        [FromQuery] int limit = 20,
+        [FromQuery] string? owner_id = null)
+    {
+        string ownerId;
+        if (UserRole == "venue_owner")
+        {
+            // The query string is ignored — an owner only ever sees their own team.
+            ownerId = UserId;
+        }
+        else if (UserRole == "super_admin")
+        {
+            if (string.IsNullOrWhiteSpace(owner_id))
+                return BadRequest(new ApiResponse<object> { Success = false, Message = "owner_id is required" });
+            ownerId = owner_id;
+        }
+        else
+        {
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Forbidden" });
+        }
+
+        var query = _db.Users.Include(u => u.StaffRole)
+            .Where(u => u.Role == "venue_staff" && u.ManagedByOwnerId == ownerId);
+
+        var total = await query.CountAsync();
+        var staff = await query
+            .OrderByDescending(u => u.CreatedAt)
+            .Skip((page - 1) * limit)
+            .Take(limit)
+            .ToListAsync();
+
+        return Ok(new ApiResponse<List<UserResponse>>
+        {
+            Data = staff.Select(ToDto).ToList(),
+            Pagination = new PaginationInfo { Page = page, Limit = limit, Total = total }
+        });
+    }
+
+    /// <summary>Change a staff member's read/write level. Owners may only touch their own.</summary>
+    [HttpPatch("{userId}/permissions")]
+    public async Task<IActionResult> UpdatePermissions(string userId, [FromBody] PermissionsUpdateRequest req)
+    {
+        if (req.Permissions is not ("read" or "write"))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "permissions must be 'read' or 'write'" });
+
+        var user = await _db.Users.FindAsync(userId);
+        if (user == null || user.Role != "venue_staff")
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Staff account not found" });
+
+        var allowed = UserRole == "super_admin"
+                   || (UserRole == "venue_owner" && user.ManagedByOwnerId == UserId);
+        if (!allowed)
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Forbidden" });
+
+        user.Permissions = req.Permissions;
+        // Kept for older dashboards: read/write now means the company's matching starter role.
+        if (!string.IsNullOrEmpty(user.ManagedByOwnerId))
+        {
+            var role = await _companies.LegacyRoleAsync(user.ManagedByOwnerId, req.Permissions);
+            user.StaffRoleId = role?.Id;
+            user.StaffRole = role;
+        }
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "Permissions updated" });
+    }
+
+    /// <summary>
+    /// PATCH /api/v1/users/{id}/staff — a clerk's role and venues. The owner of that clerk, or an
+    /// admin. Each field is optional; omitted ones are left as they are.
+    /// </summary>
+    [HttpPatch("{userId}/staff")]
+    public async Task<IActionResult> UpdateStaffAssignment(string userId, [FromBody] StaffAssignmentRequest req)
+    {
+        var user = await _db.Users.Include(u => u.StaffRole).FirstOrDefaultAsync(u => u.Id == userId);
+        if (user == null || user.Role != "venue_staff" || string.IsNullOrEmpty(user.ManagedByOwnerId))
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Staff account not found" });
+
+        var allowed = _access.IsAdmin || (_access.IsOwner && user.ManagedByOwnerId == _access.UserId);
+        if (!allowed)
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Forbidden" });
+
+        var error = await ApplyStaffAssignmentAsync(
+            user, user.ManagedByOwnerId, req.StaffRoleId, req.AllVenues, req.VenueIds, isNew: false, legacyLevel: null);
+        if (error != null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = error });
+
+        await _db.SaveChangesAsync();
+        return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "Staff updated" });
+    }
+
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateUserRequest req)
     {
@@ -151,7 +372,6 @@ public class UsersController : ControllerBase
             if (req.Role != "venue_staff")
                 return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Venue owners can only create venue_staff accounts" });
 
-            // Staff→venue linking is deferred — for now, only owners with at least one venue may create staff.
             if (!await _db.Venues.AnyAsync(v => v.OwnerId == UserId))
                 return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You must own at least one venue to create staff accounts" });
         }
@@ -163,6 +383,45 @@ public class UsersController : ControllerBase
         if (await _db.Users.AnyAsync(u => u.Email == req.Email))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Email already in use" });
 
+        // This route validated the password not at all. CreateUserRequest.Password defaults
+        // to "", so a request that simply omitted the field created an account whose stored
+        // hash is bcrypt of the empty string — a real, loginable account with the password ""
+        // that looks completely normal in the users table. Only client-side zod stood in the
+        // way, which is no protection for an HTTP endpoint. Same rule as register and
+        // self-change.
+        if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 8)
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = "Password must be at least 8 characters"
+            });
+
+        // Which owner does this staff member work for? An owner creating staff always gets
+        // themselves; an admin must name the owner explicitly, because a staff account with
+        // no owner can reach nothing and would look like a silent failure.
+        string? managedByOwnerId = null;
+        if (req.Role == "venue_staff")
+        {
+            if (UserRole == "venue_owner")
+            {
+                managedByOwnerId = UserId;
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(req.ManagedByOwnerId))
+                    return BadRequest(new ApiResponse<object> { Success = false, Message = "managedByOwnerId is required when creating a staff account" });
+
+                var owner = await _db.Users.FirstOrDefaultAsync(u => u.Id == req.ManagedByOwnerId);
+                if (owner == null || owner.Role != "venue_owner")
+                    return BadRequest(new ApiResponse<object> { Success = false, Message = "managedByOwnerId must reference an existing venue_owner" });
+
+                managedByOwnerId = owner.Id;
+            }
+        }
+
+        if (req.Role == "venue_staff" && req.Permissions is not (null or "read" or "write"))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "permissions must be 'read' or 'write'" });
+
         var user = new Models.User
         {
             Name        = req.Name.Trim(),
@@ -172,10 +431,34 @@ public class UsersController : ControllerBase
             Role        = req.Role,
             Status      = "active",
             Permissions = req.Role == "venue_staff" ? (req.Permissions ?? "read") : null,
+            ManagedByOwnerId = managedByOwnerId,
         };
+
+        if (req.Role == "venue_staff")
+        {
+            var error = await ApplyStaffAssignmentAsync(
+                user, managedByOwnerId!, req.StaffRoleId, req.AllVenues, req.VenueIds,
+                isNew: true, legacyLevel: user.Permissions);
+            if (error != null)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = error });
+        }
+
+        // Hiring checks the staff limit under the company's row lock, held until the new clerk
+        // is saved, so two hires racing at the limit cannot both get in.
+        await using var tx = user.Role == "venue_staff" ? await _db.Database.BeginTransactionAsync() : null;
+        if (user.Role == "venue_staff")
+        {
+            await _companies.EnsureAsync(managedByOwnerId!);
+            if (await _companies.LockAndCheckStaffRoomAsync(managedByOwnerId!) is { } full)
+                return Conflict(new ApiResponse<object> { Success = false, Message = full });
+        }
 
         _db.Users.Add(user);
         await _db.SaveChangesAsync();
+        if (tx != null) await tx.CommitAsync();
+
+        if (user.Role == "venue_owner")
+            await _companies.EnsureAsync(user.Id);
 
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "User created" });
     }
@@ -183,17 +466,106 @@ public class UsersController : ControllerBase
     [HttpPatch("{userId}/status")]
     public async Task<IActionResult> UpdateStatus(string userId, [FromBody] StatusUpdateRequest req)
     {
-        if (UserRole != "super_admin")
-            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Admin only" });
+        if (req.Status is not ("active" or "banned"))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Status must be 'active' or 'banned'" });
 
         var user = await _db.Users.FindAsync(userId);
         if (user == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
 
+        // An owner may suspend and restore THEIR OWN staff, and nobody else.
+        //
+        // This route was super_admin only while the dashboard showed owners a Suspend
+        // button on their My Team screen. The button 403'd and surfaced a generic error, so
+        // an owner could believe they had cut off a clerk who had in fact walked out with a
+        // working login. Suspending someone who no longer works for you is not a platform
+        // decision — it is the most basic thing an employer needs, and needing to phone the
+        // vendor for it is how a clerk keeps access for a week.
+        var isOwnStaff = UserRole == "venue_owner"
+            && user.Role == "venue_staff"
+            && user.ManagedByOwnerId == UserId;
+
+        if (UserRole != "super_admin" && !isOwnStaff)
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Not allowed" });
+
+        // Reactivating a suspended clerk takes a seat again, so it must fit under the limit —
+        // otherwise suspend-then-reactivate is a way round it.
+        var reactivatingStaff = req.Status == "active" && user.Status != "active"
+            && user.Role == "venue_staff" && !string.IsNullOrEmpty(user.ManagedByOwnerId);
+        await using var tx = reactivatingStaff ? await _db.Database.BeginTransactionAsync() : null;
+        if (reactivatingStaff)
+        {
+            await _companies.EnsureAsync(user.ManagedByOwnerId!);
+            if (await _companies.LockAndCheckStaffRoomAsync(user.ManagedByOwnerId!) is { } full)
+                return Conflict(new ApiResponse<object> { Success = false, Message = full });
+        }
+
         user.Status = req.Status;
         await _db.SaveChangesAsync();
+        if (tx != null) await tx.CommitAsync();
 
+        // A suspended clerk loses back-office access on their next request: AccessContext reads
+        // the row every time. Other roles still keep a live access token until it expires
+        // (<=15 min); refresh re-reads the row and refuses, so that window is bounded.
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "User status updated" });
+    }
+
+    /// <summary>
+    /// Set a new one-off password for another account and return it once.
+    ///
+    /// This is the whole of password recovery in this system. There is no email
+    /// infrastructure and no self-service forgot-password flow, so before this existed a
+    /// venue owner who forgot their password could only be helped by editing the database by
+    /// hand — which does not scale past the first customer, and is not something to be doing
+    /// at 9pm on a Friday.
+    ///
+    /// The server generates the password. An admin choosing one under pressure reaches for
+    /// something they already use, on an account that is not theirs.
+    /// </summary>
+    [HttpPost("{userId}/reset-password")]
+    public async Task<IActionResult> ResetPassword(string userId)
+    {
+        var user = await _db.Users.FindAsync(userId);
+        if (user == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
+
+        // Same shape as the suspension rule below: an owner may act on their own clerk and
+        // nobody else. An owner unsticking their own counter staff is routine employment
+        // admin, and routing it through the vendor is how a clerk sits locked out for a day.
+        var isOwnStaff = UserRole == "venue_owner"
+            && user.Role == "venue_staff"
+            && user.ManagedByOwnerId == UserId;
+
+        if (UserRole != "super_admin" && !isOwnStaff)
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Not allowed" });
+
+        var newPassword = TempPassword.Generate();
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(newPassword);
+
+        // The line that ends existing sessions. Without it the reset only stops FUTURE
+        // logins: whoever already holds a refresh cookie keeps minting access tokens for its
+        // full seven days, which is precisely the person a reset is aimed at.
+        // AuthController.Refresh compares each token's iat against this.
+        user.PasswordChangedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync();
+
+        // Actor and target only — never the password. This controller had no logging of any
+        // kind before now, so an admin changing another account left no trace at all.
+        _logger.LogInformation(
+            "Password reset for user {TargetUserId} ({TargetRole}) by {ActorUserId} ({ActorRole})",
+            user.Id, user.Role, UserId, UserRole);
+
+        return Ok(new ApiResponse<ResetPasswordResponse>
+        {
+            Data = new ResetPasswordResponse
+            {
+                UserId = user.Id,
+                Email = user.Email,
+                TemporaryPassword = newPassword
+            },
+            Message = "Password reset. Give this password to the user — it is shown only once."
+        });
     }
 
     [HttpPatch("{userId}/role")]
@@ -206,8 +578,46 @@ public class UsersController : ControllerBase
         if (user == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
 
+        // The column was previously assigned straight from the body with no check at all, so
+        // any string at all became a role — and every authorisation predicate in the system
+        // is written as an equality test against a known literal, meaning a typo produces an
+        // account that silently matches nothing rather than an error anyone sees.
+        if (req.Role is not ("super_admin" or "venue_owner" or "venue_staff" or "player"))
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = "Role must be one of: super_admin, venue_owner, venue_staff, player"
+            });
+
+        // A clerk is defined by WHO THEY WORK FOR, not by the role string alone. Promoting
+        // someone here left managed_by_owner_id and permissions null, and the token only
+        // carries those claims when they are non-empty (JwtService.cs:85-88) — so the account
+        // logged in perfectly and then reached nothing, with no error to explain why.
+        // Hiring goes through POST /api/v1/users, which sets the employer link.
+        if (req.Role == "venue_staff" && string.IsNullOrEmpty(user.ManagedByOwnerId))
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = "Create staff through the owner's team screen so they are linked to an employer."
+            });
+
+        // Moving OFF venue_staff must drop the employment, or a demoted clerk keeps a stale
+        // employer link and a stale permission that would come back the moment anyone set
+        // the role to venue_staff again.
+        if (user.Role == "venue_staff" && req.Role != "venue_staff")
+        {
+            user.ManagedByOwnerId = null;
+            user.Permissions = null;
+            user.StaffRoleId = null;
+            user.StaffAllVenues = true;
+            user.StaffVenueIds = [];
+        }
+
         user.Role = req.Role;
         await _db.SaveChangesAsync();
+
+        if (user.Role == "venue_owner")
+            await _companies.EnsureAsync(user.Id);
 
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "User role updated" });
     }

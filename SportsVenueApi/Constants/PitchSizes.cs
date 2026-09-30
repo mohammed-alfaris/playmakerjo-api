@@ -72,6 +72,31 @@ public static class PitchSizes
         return parent != null && UnitWeight.TryGetValue(parent, out var w) ? w : 1;
     }
 
+    /// <summary>
+    /// The size to report for a booking or standing rule that stored none, resolved from
+    /// the PITCH it sits on.
+    ///
+    /// A size is a football concept — "7" means seven-a-side. Reading
+    /// <see cref="Venue.ParentSize"/> directly hands a padel booking the venue's football
+    /// size, and the dashboard then draws "7v7" on a padel court.
+    ///
+    /// Resolution is by pitch rather than by sport on purpose: <c>Booking.Sport</c> and
+    /// <c>PermanentBooking.Sport</c> are both nullable, and these values also feed
+    /// <see cref="WeightOf"/>. Treating an unknown sport as non-football would turn a
+    /// legacy football booking from 4 units into 1 and let the slot be sold twice.
+    /// <see cref="ResolvedPitches"/> already gives a non-football pitch a null ParentSize,
+    /// so deferring to it keeps that rule in one place.
+    ///
+    /// A null <paramref name="pitchId"/> means a legacy single-pitch venue, where the
+    /// venue-level field genuinely is that pitch's size.
+    /// </summary>
+    public static string? ParentSizeForPitch(Venue v, string? pitchId)
+    {
+        if (string.IsNullOrEmpty(pitchId)) return v.ParentSize;
+        var pitch = ResolvedPitches(v).FirstOrDefault(p => p.Id == pitchId);
+        return pitch != null ? pitch.ParentSize : v.ParentSize;
+    }
+
     /// <summary>All sizes bookable at this venue (parent + sub-sizes).</summary>
     public static List<string> OfferedSizes(Venue v)
     {

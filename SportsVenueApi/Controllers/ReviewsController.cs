@@ -2,7 +2,9 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
+using SportsVenueApi.Helpers;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Reviews;
 using SportsVenueApi.Models;
@@ -83,8 +85,13 @@ public class ReviewsController : ControllerBase
     [HttpGet("eligibility/{venueId}")]
     public async Task<IActionResult> Eligibility(string venueId)
     {
+        // Attendance is derived, not stored — see Helpers/Attendance. Testing Status ==
+        // "completed" alone locked out most genuine attendees, because a booking that went
+        // fine correctly stays "confirmed": nobody taps "completed" when nothing went wrong.
+        var today = PlatformConstants.JordanToday();
         var canReview = await _db.Bookings
-            .AnyAsync(b => b.VenueId == venueId && b.PlayerId == UserId && b.Status == "completed");
+            .Where(b => b.VenueId == venueId && b.PlayerId == UserId)
+            .AnyAsync(Attendance.AttendedExpr(today));
 
         var hasExistingReview = await _db.Reviews
             .AnyAsync(r => r.VenueId == venueId && r.PlayerId == UserId);
@@ -110,9 +117,13 @@ public class ReviewsController : ControllerBase
         if (!venueExists)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        var hasCompleted = await _db.Bookings
-            .AnyAsync(b => b.VenueId == req.VenueId && b.PlayerId == UserId && b.Status == "completed");
-        if (!hasCompleted)
+        // Same derived rule as Eligibility above — the two must never disagree, or the
+        // client offers a review form that the server then refuses.
+        var today = PlatformConstants.JordanToday();
+        var hasAttended = await _db.Bookings
+            .Where(b => b.VenueId == req.VenueId && b.PlayerId == UserId)
+            .AnyAsync(Attendance.AttendedExpr(today));
+        if (!hasAttended)
             return StatusCode(403, new ApiResponse<object>
             {
                 Success = false,
@@ -240,5 +251,34 @@ public class ReviewsController : ControllerBase
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<object> { Data = null, Message = "Review hidden" });
+    }
+
+    /// <summary>
+    /// Admin: restore a hidden review.
+    ///
+    /// Hiding was one-way, and it is not only a moderation action: the venue's public
+    /// average filters on <c>!r.Hidden</c> (VenuesController.StampAggregatesAsync), so
+    /// hiding permanently removed a rating from a venue's score. One misclick on a genuine
+    /// five-star review silently and irreversibly lowered that venue's rating, with the row
+    /// still sitting visible in the admin list and no button on it.
+    ///
+    /// Any destructive action an operator can reach in one click needs its inverse.
+    /// </summary>
+    [Authorize(Roles = "super_admin")]
+    [HttpPatch("{id}/restore")]
+    public async Task<IActionResult> AdminRestore(string id)
+    {
+        var review = await _db.Reviews.FirstOrDefaultAsync(r => r.Id == id);
+        if (review == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Review not found" });
+
+        if (!review.Hidden)
+            return Ok(new ApiResponse<object> { Data = null, Message = "Review is already visible" });
+
+        review.Hidden = false;
+        review.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<object> { Data = null, Message = "Review restored" });
     }
 }

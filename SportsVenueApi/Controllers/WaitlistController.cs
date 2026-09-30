@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.Models;
+using SportsVenueApi.Services;
 using System.ComponentModel.DataAnnotations;
 
 namespace SportsVenueApi.Controllers;
@@ -14,11 +15,13 @@ public class WaitlistController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly ILogger<WaitlistController> _logger;
+    private readonly NotificationService _notifications;
 
-    public WaitlistController(AppDbContext db, ILogger<WaitlistController> logger)
+    public WaitlistController(AppDbContext db, ILogger<WaitlistController> logger, NotificationService notifications)
     {
         _db = db;
         _logger = logger;
+        _notifications = notifications;
     }
 
     // POST /api/v1/waitlist/player
@@ -64,6 +67,10 @@ public class WaitlistController : ControllerBase
         await _db.SaveChangesAsync();
 
         _logger.LogInformation("Venue registered on waitlist: {VenueName} ({Email})", entry.VenueName, email);
+
+        // The lead is saved; telling the admins is a courtesy on top and must not fail the form.
+        try { await _notifications.NotifyNewVenueLead(entry); }
+        catch (Exception ex) { _logger.LogWarning(ex, "New-lead notification failed for {VenueName}", entry.VenueName); }
         return Ok(new ApiResponse<object> { Message = "Registered! We'll be in touch." });
     }
 

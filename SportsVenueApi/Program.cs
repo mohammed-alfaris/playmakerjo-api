@@ -1,4 +1,5 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Net;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
@@ -7,11 +8,14 @@ using FluentValidation;
 using FluentValidation.AspNetCore;
 using Google.Apis.Auth.OAuth2;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using SportsVenueApi.Data;
+using SportsVenueApi.Helpers;
+using SportsVenueApi.Jobs;
 using SportsVenueApi.Services;
 
 // Note: ASP.NET maps JWT "sub" -> ClaimTypes.NameIdentifier, "role" -> ClaimTypes.Role
@@ -51,7 +55,13 @@ string[] knownJwtPlaceholders =
     "CHANGE-THIS-IN-PRODUCTION-MIN-32-CHARS!!",
     "REPLACE-WITH-STRONG-RANDOM-KEY-MIN-32-CHARS"
 };
-if (builder.Environment.IsProduction() && knownJwtPlaceholders.Contains(secretKey))
+// The deploy template's own value ("CHANGE_ME_min_32_chars_random_key") is 33 characters and
+// was not on the list, so an unedited .env booted production with a publicly known key.
+// Match the tell-tale words instead of exact strings.
+var looksLikePlaceholder = knownJwtPlaceholders.Contains(secretKey)
+    || new[] { "CHANGE_ME", "CHANGE-ME", "CHANGE-THIS", "REPLACE-WITH", "REPLACE_WITH", "YOUR-SECRET", "YOUR_SECRET" }
+        .Any(marker => secretKey.Contains(marker, StringComparison.OrdinalIgnoreCase));
+if (builder.Environment.IsProduction() && looksLikePlaceholder)
     throw new InvalidOperationException(
         "Jwt:SecretKey is set to a well-known placeholder value. " +
         "Generate a random key (e.g. `openssl rand -base64 48`) and set it via " +
@@ -59,6 +69,49 @@ if (builder.Environment.IsProduction() && knownJwtPlaceholders.Contains(secretKe
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddScoped<NotificationService>();
 builder.Services.AddScoped<SettingsService>();
+builder.Services.AddScoped<AccessContext>();
+builder.Services.AddScoped<CompanyService>();
+builder.Services.AddScoped<SportsVenueApi.Services.Reports.ReportScopeResolver>();
+builder.Services.AddScoped<SportsVenueApi.Services.Reports.ReportsService>();
+
+// ── Unpaid-booking expiry ───────────────────────────────────────────────────────────
+builder.Services.Configure<BookingExpiryOptions>(
+    builder.Configuration.GetSection(BookingExpiryOptions.Section));
+
+var expiryOptions = builder.Configuration
+    .GetSection(BookingExpiryOptions.Section).Get<BookingExpiryOptions>() ?? new BookingExpiryOptions();
+
+// The window is needed at CREATION time to stamp a deadline, which happens whether or not
+// the sweeper runs. Registered separately from the hosted service for that reason: turning
+// the job off must not silently change what gets written on new bookings.
+builder.Services.AddSingleton(new ExpiryPolicy(
+    expiryOptions.WindowMinutes, expiryOptions.SlotBufferMinutes, expiryOptions.MinimumMinutes));
+
+builder.Services.AddScoped<UnpaidBookingSweep>();
+
+if (expiryOptions.Enabled)
+{
+    builder.Services.AddHostedService<BookingExpiryService>();
+
+    // Second layer of protection for the API process. The job's own loop already catches
+    // everything, but the .NET default here is StopHost — one escaped exception in any
+    // hosted service tears down the whole API, and with `restart: unless-stopped` that
+    // becomes an invisible crash-restart loop instead of a visible outage.
+    builder.Services.Configure<HostOptions>(o =>
+        o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
+}
+// When disabled it is not registered at all, rather than registered-and-idle. This is the
+// first background WRITER in the process and what it writes is customers' bookings; it
+// should never start because someone pulled main, ran the test suite, or booted a laptop.
+//
+// That matters more than it looks: AuthControllerTests boots a BARE
+// WebApplicationFactory<Program> (AuthControllerTests.cs:7), which never receives the
+// test-database override — so a hosted service running there would sweep the developer's
+// real dev database.
+//
+// No log line here on purpose: Serilog's static Log.* is not wired up until builder.Build()
+// below, so anything written at this point is silently discarded. The job announces itself
+// from inside ExecuteAsync using an injected ILogger, which does work.
 
 // Firebase Admin SDK
 var firebaseCredPath = builder.Configuration["Firebase:CredentialFile"];
@@ -88,6 +141,23 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateLifetime = true,
             ClockSkew = TimeSpan.Zero
         };
+
+        // Access and refresh tokens are signed with the same key and issuer and carry
+        // the same sub/role claims — they differ ONLY by the "type" claim that
+        // JwtService stamps. Without this check a refresh token authenticates against
+        // every endpoint, silently turning the deliberate 15-minute access window into
+        // a 7-day one and defeating the ban check that only runs on /auth/refresh.
+        // JwtService.CreateToken always sets this claim, so failing closed is safe.
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = context =>
+            {
+                var tokenType = context.Principal?.FindFirst("type")?.Value;
+                if (tokenType != "access")
+                    context.Fail("Only access tokens are accepted on this endpoint.");
+                return Task.CompletedTask;
+            }
+        };
     });
 
 // CORS
@@ -114,6 +184,25 @@ builder.Services.AddCors(options =>
 
 // Rate limiting — "auth" partitions per client IP so one attacker can't exhaust
 // logins for everyone; "uploads" and "booking-create" partition per authenticated user.
+// Behind nginx, every request reaches Kestrel from the Docker gateway, so without this the
+// connection address is the same for everyone: the per-IP login limiter below was one shared
+// bucket for the whole platform (5 logins/refreshes a minute, all users together), and the app
+// never saw HTTPS, so HSTS was never sent. Trust X-Forwarded-For/-Proto only from private and
+// loopback addresses — the API port is published on 127.0.0.1, so nothing outside the host can
+// reach it to forge the header — and take only the last hop, the one nginx itself appended.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+    options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(IPAddress.Parse("127.0.0.0"), 8));
+    options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(IPAddress.Parse("10.0.0.0"), 8));
+    options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(IPAddress.Parse("172.16.0.0"), 12));
+    options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(IPAddress.Parse("192.168.0.0"), 16));
+    options.KnownProxies.Add(IPAddress.IPv6Loopback);
+});
+
 static string UserOrIpKey(HttpContext context) =>
     context.User.FindFirstValue(ClaimTypes.NameIdentifier)
         ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -121,12 +210,18 @@ static string UserOrIpKey(HttpContext context) =>
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
+    // 5/min per IP in production — brute-force protection on login. Configurable for the same
+    // reason the uploads limiter below is: the whole test suite shares one IP, and this policy
+    // covers /auth/refresh as well as /auth/login, so a handful of tests exercising session
+    // behaviour would exhaust the budget and fail whichever OTHER file happened to run next.
+    // That is a test-ordering failure with no relation to the code under test.
+    var authLimit = builder.Configuration.GetValue("RateLimiting:Auth:PermitLimit", 5);
     options.AddPolicy("auth", context =>
         RateLimitPartition.GetFixedWindowLimiter(
             context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 5,
+                PermitLimit = authLimit,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0
             }));
@@ -164,17 +259,64 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(optio
 
 builder.Services.AddValidatorsFromAssemblyContaining<SportsVenueApi.Validation.VenueCreateRequestValidator>();
 builder.Services.AddFluentValidationAutoValidation();
-builder.Services.AddControllers();
+builder.Services.AddControllers(o => o.Filters.Add<AccessContextFilter>());
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
+// First in the pipeline: everything after it — rate limiting, HTTPS handling, request logs —
+// has to see the real client address and scheme.
+app.UseForwardedHeaders();
+
 // Seed command: dotnet run -- --seed
+//
+// DESTRUCTIVE. SeedData.Initialize begins with EnsureDeletedAsync() — it drops the
+// entire database and recreates it with demo data. On an environment holding real
+// customers that is total, unrecoverable data loss from a single command, so it is
+// refused outright in Production. Anyone who genuinely needs to reset a production
+// database can restore from a backup, which forces the deliberate, reversible path.
 if (args.Contains("--seed"))
 {
+    if (app.Environment.IsProduction())
+    {
+        Log.Fatal(
+            "Refusing to seed: --seed DROPS THE ENTIRE DATABASE and this is a Production "
+            + "environment. If you really intend to destroy this data, restore from a backup instead.");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    Log.Warning(
+        "Seeding {Environment}: the existing database is about to be DROPPED and replaced with demo data.",
+        app.Environment.EnvironmentName);
+
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await SeedData.Initialize(db);
+    return;
+}
+
+// Seed command: dotnet run -- --seed-demo-owner
+//
+// The opposite shape of --seed: additive only, never drops anything, and safe to run
+// against Production — it checks for its own owner email and no-ops if already present.
+// Used to populate a database (e.g. right after a --seed refusal, or on a freshly wiped
+// Production instance) with one realistic venue_owner + customer book to click through.
+if (args.Contains("--seed-demo-owner"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+
+    var email = Environment.GetEnvironmentVariable("DEMO_OWNER_EMAIL") ?? "demo.owner@playmakerjo.com";
+    var password = Environment.GetEnvironmentVariable("DEMO_OWNER_PASSWORD");
+    if (string.IsNullOrWhiteSpace(password))
+    {
+        password = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
+        Console.WriteLine($"[demo-seed] DEMO_OWNER_PASSWORD not set — generated password: {password}");
+    }
+
+    Console.WriteLine(await SportsVenueApi.Data.DemoOwnerSeed.Run(db, email, password));
     return;
 }
 

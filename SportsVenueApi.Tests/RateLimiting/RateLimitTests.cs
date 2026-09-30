@@ -20,6 +20,11 @@ public class LowRateLimitFactory : TestWebApplicationFactory
         base.ConfigureWebHost(builder);
         builder.UseSetting("RateLimiting:Uploads:PermitLimit", "1");
         builder.UseSetting("RateLimiting:BookingCreate:PermitLimit", "1");
+        // Auth is raised suite-wide (see TestWebApplicationFactory) so session tests do not
+        // exhaust it for everyone else. Put it back to 1 HERE, where the limiter itself is
+        // what is under test — otherwise making it configurable would mean nothing verifies
+        // it still bites, and it could go permissive in production unnoticed.
+        builder.UseSetting("RateLimiting:Auth:PermitLimit", "1");
     }
 }
 
@@ -44,6 +49,23 @@ public class RateLimitTests : IDisposable
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", jwt.CreateAccessToken(userId, role));
         return client;
+    }
+
+    [Fact]
+    public async Task Auth_SecondRapidLogin_Returns429()
+    {
+        // The brute-force guard on login, and the one limiter with no test until now. It also
+        // covers /auth/refresh, since the whole controller carries the policy.
+        var client = _factory.CreateClient();
+        var creds = new { email = "nobody@test.local", password = "wrong-on-purpose" };
+
+        var first = await client.PostAsJsonAsync("/api/v1/auth/login", creds);
+        var second = await client.PostAsJsonAsync("/api/v1/auth/login", creds);
+
+        // Wrong credentials either way — 401 is the pass, 429 is the limiter. What matters is
+        // that the SECOND attempt never reaches the password check at all.
+        Assert.Equal(HttpStatusCode.Unauthorized, first.StatusCode);
+        Assert.Equal((HttpStatusCode)429, second.StatusCode);
     }
 
     [Fact]
@@ -84,7 +106,11 @@ public class RateLimitTests : IDisposable
 
     private static MultipartFormDataContent UploadForm()
     {
-        var file = new ByteArrayContent([0x89, 0x50, 0x4E, 0x47]);
+        // The complete 8-byte PNG signature. This was the first four bytes only, which
+        // is not a valid PNG header — it passed when uploads trusted the extension and
+        // never looked at the content. This test is about the rate limiter, so the
+        // payload has to clear content validation to reach it.
+        var file = new ByteArrayContent([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
         file.Headers.ContentType = new MediaTypeHeaderValue("image/png");
         return new MultipartFormDataContent
         {

@@ -37,9 +37,18 @@ namespace SportsVenueApi.Migrations
                         .HasColumnType("double")
                         .HasColumnName("amount_paid");
 
+                    b.Property<DateTime?>("AutoCancelledAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("auto_cancelled_at");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)")
                         .HasColumnName("created_at");
+
+                    b.Property<string>("CustomerId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("customer_id");
 
                     b.Property<DateTime>("Date")
                         .HasColumnType("datetime(6)")
@@ -57,6 +66,10 @@ namespace SportsVenueApi.Migrations
                         .HasColumnType("int")
                         .HasColumnName("duration");
 
+                    b.Property<bool>("IsManual")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("is_manual");
+
                     b.Property<string>("Notes")
                         .HasColumnType("text")
                         .HasColumnName("notes");
@@ -64,6 +77,10 @@ namespace SportsVenueApi.Migrations
                     b.Property<double>("OwnerAmount")
                         .HasColumnType("double")
                         .HasColumnName("owner_amount");
+
+                    b.Property<DateTime?>("PaymentDeadlineAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("payment_deadline_at");
 
                     b.Property<string>("PaymentMethod")
                         .HasMaxLength(50)
@@ -82,6 +99,11 @@ namespace SportsVenueApi.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("varchar(50)")
                         .HasColumnName("payment_proof_status");
+
+                    b.Property<string>("PermanentBookingId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("permanent_booking_id");
 
                     b.Property<string>("PitchId")
                         .HasMaxLength(64)
@@ -144,7 +166,115 @@ namespace SportsVenueApi.Migrations
 
                     b.HasIndex("VenueId");
 
+                    b.HasIndex("CustomerId", "Date");
+
+                    b.HasIndex("PaymentDeadlineAt", "Status");
+
+                    b.HasIndex("PermanentBookingId", "Date");
+
                     b.ToTable("bookings");
+                });
+
+            modelBuilder.Entity("SportsVenueApi.Models.Company", b =>
+                {
+                    b.Property<string>("OwnerId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("owner_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("created_at");
+
+                    b.Property<int?>("MaxStaff")
+                        .HasColumnType("int")
+                        .HasColumnName("max_staff");
+
+                    b.Property<int?>("MaxVenues")
+                        .HasColumnType("int")
+                        .HasColumnName("max_venues");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)")
+                        .HasColumnName("name_ar");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("OwnerId");
+
+                    b.ToTable("companies");
+                });
+
+            modelBuilder.Entity("SportsVenueApi.Models.Customer", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("ArchivedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("archived_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(280)
+                        .HasColumnType("varchar(280)")
+                        .HasColumnName("note");
+
+                    b.Property<string>("OwnerId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("owner_id");
+
+                    b.Property<string>("Phone")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)")
+                        .HasColumnName("phone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerId", "Phone")
+                        .IsUnique();
+
+                    b.HasIndex("OwnerId", "Status");
+
+                    b.ToTable("customers");
                 });
 
             modelBuilder.Entity("SportsVenueApi.Models.DeviceToken", b =>
@@ -327,14 +457,30 @@ namespace SportsVenueApi.Migrations
                         .HasColumnType("varchar(32)")
                         .HasColumnName("booking_id");
 
+                    b.Property<string>("CustomerId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("customer_id");
+
                     b.Property<DateTime>("Date")
                         .HasColumnType("datetime(6)")
                         .HasColumnName("date");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)")
+                        .HasColumnName("kind");
 
                     b.Property<string>("Method")
                         .HasMaxLength(100)
                         .HasColumnType("varchar(100)")
                         .HasColumnName("method");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("note");
 
                     b.Property<string>("PlayerId")
                         .IsRequired()
@@ -342,17 +488,33 @@ namespace SportsVenueApi.Migrations
                         .HasColumnType("varchar(32)")
                         .HasColumnName("player_id");
 
+                    b.Property<string>("RecordedByUserId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("recorded_by_user_id");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("varchar(50)")
                         .HasColumnName("status");
 
+                    b.Property<string>("VenueId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("venue_id");
+
                     b.HasKey("Id");
 
                     b.HasIndex("BookingId");
 
+                    b.HasIndex("CustomerId");
+
                     b.HasIndex("PlayerId");
+
+                    b.HasIndex("RecordedByUserId");
+
+                    b.HasIndex("VenueId", "Date");
 
                     b.ToTable("payments");
                 });
@@ -377,6 +539,11 @@ namespace SportsVenueApi.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("varchar(32)")
                         .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("CustomerId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("customer_id");
 
                     b.Property<int>("DayOfWeek")
                         .HasColumnType("int")
@@ -429,6 +596,8 @@ namespace SportsVenueApi.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CustomerId");
+
                     b.HasIndex("VenueId", "DayOfWeek", "Status");
 
                     b.ToTable("permanent_bookings");
@@ -442,6 +611,14 @@ namespace SportsVenueApi.Migrations
                         .HasColumnName("id");
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("DefaultMaxStaff")
+                        .HasColumnType("int")
+                        .HasColumnName("default_max_staff");
+
+                    b.Property<int?>("DefaultMaxVenues")
+                        .HasColumnType("int")
+                        .HasColumnName("default_max_venues");
 
                     b.Property<string>("MaintenanceMessageAr")
                         .IsRequired()
@@ -615,6 +792,46 @@ namespace SportsVenueApi.Migrations
                     b.ToTable("reviews");
                 });
 
+            modelBuilder.Entity("SportsVenueApi.Models.StaffRole", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("varchar(60)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("OwnerId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("owner_id");
+
+                    b.Property<string>("PermissionsJson")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("permissions");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("staff_roles");
+                });
+
             modelBuilder.Entity("SportsVenueApi.Models.User", b =>
                 {
                     b.Property<string>("Id")
@@ -636,11 +853,20 @@ namespace SportsVenueApi.Migrations
                         .HasColumnType("varchar(255)")
                         .HasColumnName("email");
 
+                    b.Property<string>("ManagedByOwnerId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("managed_by_owner_id");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("varchar(255)")
                         .HasColumnName("name");
+
+                    b.Property<DateTime?>("PasswordChangedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("password_changed_at");
 
                     b.Property<string>("PasswordHash")
                         .IsRequired()
@@ -670,6 +896,20 @@ namespace SportsVenueApi.Migrations
                         .HasColumnType("varchar(50)")
                         .HasColumnName("role");
 
+                    b.Property<bool>("StaffAllVenues")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("staff_all_venues");
+
+                    b.Property<string>("StaffRoleId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("staff_role_id");
+
+                    b.Property<string>("StaffVenueIdsJson")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("staff_venue_ids");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -680,6 +920,10 @@ namespace SportsVenueApi.Migrations
 
                     b.HasIndex("Email")
                         .IsUnique();
+
+                    b.HasIndex("ManagedByOwnerId");
+
+                    b.HasIndex("StaffRoleId");
 
                     b.ToTable("users");
                 });
@@ -720,6 +964,11 @@ namespace SportsVenueApi.Migrations
                         .HasColumnType("datetime(6)")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("CustomFeaturesJson")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("custom_features");
+
                     b.Property<double>("DepositPercentage")
                         .HasColumnType("double")
                         .HasColumnName("deposit_percentage");
@@ -731,6 +980,11 @@ namespace SportsVenueApi.Migrations
                     b.Property<string>("DescriptionAr")
                         .HasColumnType("text")
                         .HasColumnName("description_ar");
+
+                    b.Property<string>("FeatureIdsJson")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("feature_ids");
 
                     b.Property<string>("ImagesJson")
                         .IsRequired()
@@ -826,6 +1080,58 @@ namespace SportsVenueApi.Migrations
                     b.ToTable("venues");
                 });
 
+            modelBuilder.Entity("SportsVenueApi.Models.VenueFeature", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Icon")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)")
+                        .HasColumnName("icon");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("NameAr")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("varchar(60)")
+                        .HasColumnName("name_ar");
+
+                    b.Property<string>("NameEn")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("varchar(60)")
+                        .HasColumnName("name_en");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("int")
+                        .HasColumnName("sort_order");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NameAr")
+                        .IsUnique();
+
+                    b.HasIndex("NameEn")
+                        .IsUnique();
+
+                    b.ToTable("venue_features");
+                });
+
             modelBuilder.Entity("SportsVenueApi.Models.VenueWaitlist", b =>
                 {
                     b.Property<int>("Id")
@@ -881,6 +1187,11 @@ namespace SportsVenueApi.Migrations
 
             modelBuilder.Entity("SportsVenueApi.Models.Booking", b =>
                 {
+                    b.HasOne("SportsVenueApi.Models.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("SportsVenueApi.Models.User", "Player")
                         .WithMany()
                         .HasForeignKey("PlayerId")
@@ -893,9 +1204,22 @@ namespace SportsVenueApi.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.Navigation("Customer");
+
                     b.Navigation("Player");
 
                     b.Navigation("Venue");
+                });
+
+            modelBuilder.Entity("SportsVenueApi.Models.Company", b =>
+                {
+                    b.HasOne("SportsVenueApi.Models.User", "Owner")
+                        .WithOne()
+                        .HasForeignKey("SportsVenueApi.Models.Company", "OwnerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Owner");
                 });
 
             modelBuilder.Entity("SportsVenueApi.Models.DeviceToken", b =>
@@ -947,24 +1271,45 @@ namespace SportsVenueApi.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("SportsVenueApi.Models.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("SportsVenueApi.Models.User", "Player")
                         .WithMany()
                         .HasForeignKey("PlayerId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("SportsVenueApi.Models.User", "RecordedBy")
+                        .WithMany()
+                        .HasForeignKey("RecordedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("Booking");
 
+                    b.Navigation("Customer");
+
                     b.Navigation("Player");
+
+                    b.Navigation("RecordedBy");
                 });
 
             modelBuilder.Entity("SportsVenueApi.Models.PermanentBooking", b =>
                 {
+                    b.HasOne("SportsVenueApi.Models.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("SportsVenueApi.Models.Venue", "Venue")
                         .WithMany()
                         .HasForeignKey("VenueId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Customer");
 
                     b.Navigation("Venue");
                 });
@@ -1005,6 +1350,16 @@ namespace SportsVenueApi.Migrations
                     b.Navigation("Player");
 
                     b.Navigation("Venue");
+                });
+
+            modelBuilder.Entity("SportsVenueApi.Models.User", b =>
+                {
+                    b.HasOne("SportsVenueApi.Models.StaffRole", "StaffRole")
+                        .WithMany()
+                        .HasForeignKey("StaffRoleId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("StaffRole");
                 });
 
             modelBuilder.Entity("SportsVenueApi.Models.Venue", b =>
