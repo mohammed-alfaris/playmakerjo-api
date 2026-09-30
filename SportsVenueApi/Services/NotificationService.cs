@@ -138,6 +138,46 @@ public class NotificationService
         return lang == "ar" ? bilingualText[(idx + 1)..] : bilingualText[..idx];
     }
 
+    /// <summary>
+    /// A player booked through the app. The owner hears about it the moment it happens — the
+    /// dashboard's inbox shows it and refreshes the schedule. Counter bookings do not come
+    /// here: whoever keyed one in is standing at the desk already.
+    /// </summary>
+    public async Task NotifyNewBooking(Booking booking)
+    {
+        if (booking.Venue == null) return;
+        var player = booking.Player?.Name ?? "A player";
+        var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
+        await CreateNotification(
+            booking.Venue.OwnerId,
+            Bi("New booking", "حجز جديد"),
+            Bi(
+                $"{player} booked {booking.Venue.Name} for {when}.",
+                $"{player} حجز {booking.Venue.Name} بتاريخ {when}."
+            ),
+            "new_booking",
+            booking.Id
+        );
+    }
+
+    /// <summary>A weekly series booked through the app: one notice for the whole series, not one per week.</summary>
+    public async Task NotifyNewSeries(Booking first, int sessions)
+    {
+        if (first.Venue == null) return;
+        var player = first.Player?.Name ?? "A player";
+        var when = $"{first.Date:yyyy-MM-dd} {first.StartTime}";
+        await CreateNotification(
+            first.Venue.OwnerId,
+            Bi("New weekly booking", "حجز أسبوعي جديد"),
+            Bi(
+                $"{player} booked {first.Venue.Name} for {sessions} sessions, starting {when}.",
+                $"{player} حجز {first.Venue.Name} لـ {sessions} جلسات، تبدأ {when}."
+            ),
+            "new_series",
+            first.Id
+        );
+    }
+
     public async Task NotifyBookingConfirmed(Booking booking)
     {
         var venue = booking.Venue?.Name ?? "venue";
