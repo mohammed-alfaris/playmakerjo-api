@@ -1,4 +1,5 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Net;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
@@ -7,6 +8,7 @@ using FluentValidation;
 using FluentValidation.AspNetCore;
 using Google.Apis.Auth.OAuth2;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -53,7 +55,13 @@ string[] knownJwtPlaceholders =
     "CHANGE-THIS-IN-PRODUCTION-MIN-32-CHARS!!",
     "REPLACE-WITH-STRONG-RANDOM-KEY-MIN-32-CHARS"
 };
-if (builder.Environment.IsProduction() && knownJwtPlaceholders.Contains(secretKey))
+// The deploy template's own value ("CHANGE_ME_min_32_chars_random_key") is 33 characters and
+// was not on the list, so an unedited .env booted production with a publicly known key.
+// Match the tell-tale words instead of exact strings.
+var looksLikePlaceholder = knownJwtPlaceholders.Contains(secretKey)
+    || new[] { "CHANGE_ME", "CHANGE-ME", "CHANGE-THIS", "REPLACE-WITH", "REPLACE_WITH", "YOUR-SECRET", "YOUR_SECRET" }
+        .Any(marker => secretKey.Contains(marker, StringComparison.OrdinalIgnoreCase));
+if (builder.Environment.IsProduction() && looksLikePlaceholder)
     throw new InvalidOperationException(
         "Jwt:SecretKey is set to a well-known placeholder value. " +
         "Generate a random key (e.g. `openssl rand -base64 48`) and set it via " +
@@ -176,6 +184,25 @@ builder.Services.AddCors(options =>
 
 // Rate limiting — "auth" partitions per client IP so one attacker can't exhaust
 // logins for everyone; "uploads" and "booking-create" partition per authenticated user.
+// Behind nginx, every request reaches Kestrel from the Docker gateway, so without this the
+// connection address is the same for everyone: the per-IP login limiter below was one shared
+// bucket for the whole platform (5 logins/refreshes a minute, all users together), and the app
+// never saw HTTPS, so HSTS was never sent. Trust X-Forwarded-For/-Proto only from private and
+// loopback addresses — the API port is published on 127.0.0.1, so nothing outside the host can
+// reach it to forge the header — and take only the last hop, the one nginx itself appended.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+    options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(IPAddress.Parse("127.0.0.0"), 8));
+    options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(IPAddress.Parse("10.0.0.0"), 8));
+    options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(IPAddress.Parse("172.16.0.0"), 12));
+    options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(IPAddress.Parse("192.168.0.0"), 16));
+    options.KnownProxies.Add(IPAddress.IPv6Loopback);
+});
+
 static string UserOrIpKey(HttpContext context) =>
     context.User.FindFirstValue(ClaimTypes.NameIdentifier)
         ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -236,6 +263,10 @@ builder.Services.AddControllers(o => o.Filters.Add<AccessContextFilter>());
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
+
+// First in the pipeline: everything after it — rate limiting, HTTPS handling, request logs —
+// has to see the real client address and scheme.
+app.UseForwardedHeaders();
 
 // Seed command: dotnet run -- --seed
 //
