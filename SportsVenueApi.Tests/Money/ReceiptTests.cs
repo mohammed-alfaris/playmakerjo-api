@@ -40,6 +40,28 @@ public class ReceiptTests
     }
 
     [Fact]
+    public async Task ACancelledBooking_OwesNothing_WhateverWasKept()
+    {
+        var owner = await _fx.CreateOwner();
+        var venue = await _fx.CreateBasketballVenue(owner.Id);
+        var client = _fx.CreateClientFor(owner.Id, "venue_owner");
+        var res = await client.PostAsJsonAsync("/api/v1/bookings", new
+        {
+            venueId = venue.Id, sport = "basketball", date = PlatformConstants.JordanToday().AddDays(3).ToString("yyyy-MM-dd"),
+            startTime = "12:00", duration = 120, paymentMethod = "cash", isManual = true, customerPaid = true,
+            customerPhone = "0791234569", customerName = "Receipt Customer",
+        });
+        var id = (await res.Content.ReadFromJsonAsync<ApiResponse<BookingResponse>>())!.Data!.Id;
+        await client.PatchAsJsonAsync($"/api/v1/bookings/{id}/cancel", new { refund = "none" });
+        await client.PostAsJsonAsync($"/api/v1/bookings/{id}/refund", new { amount = 25, kind = "refund" });
+
+        var receipt = (await (await client.GetAsync($"/api/v1/bookings/{id}/receipt"))
+            .Content.ReadFromJsonAsync<ApiResponse<BookingReceipt>>())!.Data!;
+
+        Assert.Equal(("cancelled", 15.0, 0.0), (receipt.Status, receipt.AmountPaid, receipt.Balance));
+    }
+
+    [Fact]
     public async Task OnlyThoseWhoSeePayments_CanPrintOne()
     {
         var owner = await _fx.CreateOwner();

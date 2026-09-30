@@ -592,7 +592,10 @@ public class BookingsController : ControllerBase
                 Status = booking.Status,
                 TotalAmount = Math.Round(booking.TotalAmount, 3),
                 AmountPaid = Math.Round(booking.AmountPaid, 3),
-                Balance = Math.Max(0, Math.Round(booking.TotalAmount - booking.AmountPaid, 3)),
+                // A cancelled booking owes nothing, whatever was kept from it.
+                Balance = booking.Status == "cancelled"
+                    ? 0
+                    : Math.Max(0, Math.Round(booking.TotalAmount - booking.AmountPaid, 3)),
                 Payments = rows.Select(p => new ReceiptLine
                 {
                     Date = p.Date,
@@ -660,7 +663,11 @@ public class BookingsController : ControllerBase
         SlotPlan? plan = null;
         if (slotChanged)
         {
-            var invalid = PlanSlot(venue, booking.Sport, date, startTime, duration, pitchChanged ? req.PitchId : currentPitchId, size, out plan);
+            // An old row may carry no sport; its pitch still says what it is.
+            var sport = booking.Sport
+                ?? PitchSizes.ResolvedPitches(venue).FirstOrDefault(p => p.Id == currentPitchId)?.Sport
+                ?? "";
+            var invalid = PlanSlot(venue, sport, date, startTime, duration, pitchChanged ? req.PitchId : currentPitchId, size, out plan);
             if (invalid != null) return invalid;
 
             await LockVenueAsync(venue.Id);
