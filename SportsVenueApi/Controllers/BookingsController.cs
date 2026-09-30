@@ -538,6 +538,73 @@ public class BookingsController : ControllerBase
     }
 
     // PATCH /api/v1/bookings/{id}/complete — mark a confirmed booking as completed
+    // GET /api/v1/bookings/{id}/receipt — what a printed receipt shows
+    //
+    // Built from the ledger rows, not from amount_paid alone, so the paper matches the money
+    // report line for line: every payment, refund and correction, dated, with its method.
+    [HttpGet("{id}/receipt")]
+    public async Task<IActionResult> Receipt(string id)
+    {
+        var booking = await _db.Bookings
+            .Include(b => b.Venue)
+            .Include(b => b.Player)
+            .Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.Id == id);
+        if (booking == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
+        if (!CanOnBooking(StaffPermissions.PaymentsView, booking))
+            return Forbid();
+
+        var company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.OwnerId == booking.Venue.OwnerId);
+        var rows = await _db.Payments.AsNoTracking()
+            .Where(p => p.BookingId == booking.Id)
+            .OrderBy(p => p.Date)
+            .ToListAsync();
+        var pitch = booking.PitchId == null
+            ? null
+            : PitchSizes.ResolvedPitches(booking.Venue).FirstOrDefault(p => p.Id == booking.PitchId);
+
+        // A counter booking's player row is the owner's own account; the person is the customer.
+        var customerName = booking.Customer?.Name ?? (booking.IsManual ? null : booking.Player?.Name);
+        var customerPhone = booking.Customer?.Phone ?? (booking.IsManual ? null : booking.Player?.Phone);
+
+        return Ok(new ApiResponse<BookingReceipt>
+        {
+            Data = new BookingReceipt
+            {
+                ReceiptNumber = booking.Id.ToUpperInvariant(),
+                IssuedAt = DateTime.UtcNow,
+                CompanyName = company?.Name,
+                CompanyNameAr = company?.NameAr,
+                VenueName = booking.Venue.Name,
+                VenueNameAr = booking.Venue.NameAr,
+                VenueAddress = booking.Venue.Address,
+                VenueCity = booking.Venue.City,
+                CustomerName = customerName,
+                CustomerPhone = customerPhone,
+                Sport = booking.Sport,
+                PitchName = pitch?.Name,
+                PitchSize = booking.PitchSize,
+                Date = booking.Date.ToString("yyyy-MM-dd"),
+                StartTime = booking.StartTime,
+                Duration = booking.Duration,
+                Status = booking.Status,
+                TotalAmount = Math.Round(booking.TotalAmount, 3),
+                AmountPaid = Math.Round(booking.AmountPaid, 3),
+                Balance = Math.Max(0, Math.Round(booking.TotalAmount - booking.AmountPaid, 3)),
+                Payments = rows.Select(p => new ReceiptLine
+                {
+                    Date = p.Date,
+                    Amount = Math.Round(p.Amount, 3),
+                    Method = p.Method,
+                    Kind = p.Kind,
+                    Note = p.Note,
+                }).ToList(),
+            }
+        });
+    }
+
     /// <summary>Statuses a booking can still be moved or re-priced in: it has not happened yet.</summary>
     private static readonly HashSet<string> EditableStatuses =
         new() { "pending", "pending_payment", "pending_review", "confirmed" };

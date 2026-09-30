@@ -226,6 +226,95 @@ public class UpdateBookingRequest
     public string? Notes { get; set; }
 }
 
+/// <summary>Everything a printed receipt shows, in one call.</summary>
+public class BookingReceipt
+{
+    /// <summary>The booking reference, upper-cased: what the customer quotes back.</summary>
+    [JsonPropertyName("receiptNumber")]
+    public string ReceiptNumber { get; set; } = "";
+
+    [JsonPropertyName("issuedAt")]
+    public DateTime IssuedAt { get; set; }
+
+    [JsonPropertyName("companyName")]
+    public string? CompanyName { get; set; }
+
+    [JsonPropertyName("companyNameAr")]
+    public string? CompanyNameAr { get; set; }
+
+    [JsonPropertyName("venueName")]
+    public string VenueName { get; set; } = "";
+
+    [JsonPropertyName("venueNameAr")]
+    public string? VenueNameAr { get; set; }
+
+    [JsonPropertyName("venueAddress")]
+    public string? VenueAddress { get; set; }
+
+    [JsonPropertyName("venueCity")]
+    public string? VenueCity { get; set; }
+
+    [JsonPropertyName("customerName")]
+    public string? CustomerName { get; set; }
+
+    [JsonPropertyName("customerPhone")]
+    public string? CustomerPhone { get; set; }
+
+    [JsonPropertyName("sport")]
+    public string Sport { get; set; } = "";
+
+    [JsonPropertyName("pitchName")]
+    public string? PitchName { get; set; }
+
+    [JsonPropertyName("pitchSize")]
+    public string? PitchSize { get; set; }
+
+    [JsonPropertyName("date")]
+    public string Date { get; set; } = "";
+
+    [JsonPropertyName("startTime")]
+    public string? StartTime { get; set; }
+
+    [JsonPropertyName("duration")]
+    public int Duration { get; set; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "";
+
+    [JsonPropertyName("totalAmount")]
+    public double TotalAmount { get; set; }
+
+    [JsonPropertyName("amountPaid")]
+    public double AmountPaid { get; set; }
+
+    /// <summary>Still owed; never negative (an overpayment shows as paid in full).</summary>
+    [JsonPropertyName("balance")]
+    public double Balance { get; set; }
+
+    [JsonPropertyName("payments")]
+    public List<ReceiptLine> Payments { get; set; } = [];
+}
+
+public class ReceiptLine
+{
+    [JsonPropertyName("date")]
+    public DateTime Date { get; set; }
+
+    /// <summary>Negative for a refund or correction.</summary>
+    [JsonPropertyName("amount")]
+    public double Amount { get; set; }
+
+    [JsonPropertyName("method")]
+    public string? Method { get; set; }
+
+    /// <summary>"deposit" | "balance" | "full" | "refund" | "correction"</summary>
+    [JsonPropertyName("kind")]
+    public string? Kind { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+}
+
 public class ReviewProofRequest
 {
     [JsonPropertyName("approved")]
