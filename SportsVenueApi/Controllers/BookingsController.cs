@@ -568,6 +568,13 @@ public class BookingsController : ControllerBase
             .AsSplitQuery()
             .FirstAsync(b => b.Id == booking.Id);
 
+        // Tell the owner about bookings made in the app (non-blocking; the booking stands).
+        if (!booking.IsManual)
+        {
+            try { await _notifications.NotifyNewBooking(booking); }
+            catch (Exception ex) { _logger.LogWarning(ex, "New-booking notification failed for {BookingId}", booking.Id); }
+        }
+
         return Ok(new ApiResponse<BookingResponse>
         {
             Data = ToDto(booking),
@@ -1448,6 +1455,12 @@ public class BookingsController : ControllerBase
             .Where(b => ids.Contains(b.Id))
             .OrderBy(b => b.Date)
             .ToListAsync();
+
+        if (reloaded.Count > 0)
+        {
+            try { await _notifications.NotifyNewSeries(reloaded[0], reloaded.Count); }
+            catch (Exception ex) { _logger.LogWarning(ex, "New-series notification failed for group {GroupId}", group.Id); }
+        }
 
         return Ok(new ApiResponse<RecurringBookingResponse>
         {

@@ -253,7 +253,8 @@ public class BookingExpiryTests
     {
         using var scope = _fx.Factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        return await db.Notifications.CountAsync(n => n.ReferenceId == bookingId);
+        // The release notice only — the owner's "new booking" notice shares the reference.
+        return await db.Notifications.CountAsync(n => n.ReferenceId == bookingId && n.Type == "booking_cancelled");
     }
 
     [Fact]
