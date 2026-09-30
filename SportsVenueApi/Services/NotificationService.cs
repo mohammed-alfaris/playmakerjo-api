@@ -160,6 +160,26 @@ public class NotificationService
         );
     }
 
+    /// <summary>
+    /// The venue moved an app booking. The player is told where it went — they would otherwise
+    /// turn up at the old time. Only the player: the venue made the change.
+    /// </summary>
+    public async Task NotifyBookingMoved(Booking booking)
+    {
+        var venue = booking.Venue?.Name ?? "venue";
+        var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
+        await CreateNotification(
+            booking.PlayerId,
+            Bi("Booking moved", "تم تغيير موعد الحجز"),
+            Bi(
+                $"Your booking at {venue} is now on {when}.",
+                $"حجزك في {venue} أصبح بتاريخ {when}."
+            ),
+            "booking_moved",
+            booking.Id
+        );
+    }
+
     /// <summary>A weekly series booked through the app: one notice for the whole series, not one per week.</summary>
     public async Task NotifyNewSeries(Booking first, int sessions)
     {

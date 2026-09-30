@@ -194,6 +194,38 @@ public class RefundRequest
     public string? Note { get; set; }
 }
 
+/// <summary>
+/// Move or re-price a booking. Every field is optional; what is left out stays as it is.
+/// Changing the duration, pitch or size re-prices from the venue's list unless an explicit
+/// <see cref="TotalAmount"/> is given.
+/// </summary>
+public class UpdateBookingRequest
+{
+    [JsonPropertyName("date")]
+    public string? Date { get; set; }
+
+    [JsonPropertyName("startTime")]
+    public string? StartTime { get; set; }
+
+    [JsonPropertyName("duration")]
+    public int? Duration { get; set; }
+
+    [JsonPropertyName("pitchId")]
+    public string? PitchId { get; set; }
+
+    [JsonPropertyName("pitchSize")]
+    public string? PitchSize { get; set; }
+
+    /// <summary>A price agreed with the customer. Needs the permission to record payments.</summary>
+    [JsonPropertyName("totalAmount")]
+    [Range(0, 100000)]
+    public double? TotalAmount { get; set; }
+
+    [JsonPropertyName("notes")]
+    [StringLength(1000)]
+    public string? Notes { get; set; }
+}
+
 public class ReviewProofRequest
 {
     [JsonPropertyName("approved")]

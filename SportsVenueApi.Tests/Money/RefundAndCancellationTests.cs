@@ -4,8 +4,6 @@ using SportsVenueApi.Constants;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Bookings;
 using SportsVenueApi.DTOs.Reports;
-using SportsVenueApi.DTOs.Staff;
-using SportsVenueApi.DTOs.Users;
 using SportsVenueApi.Models;
 using SportsVenueApi.Tests.Infrastructure;
 
@@ -114,26 +112,11 @@ public class RefundAndCancellationTests
 
     // ── Who may move money back ──────────────────────────────────────────────
 
-    private async Task<HttpClient> ClerkWith(Co co, params string[] permissions)
-    {
-        var role = await co.Client.PostAsJsonAsync("/api/v1/staff-roles",
-            new { name = "Role " + Guid.NewGuid().ToString("N")[..6], permissions });
-        var roleId = (await role.Content.ReadFromJsonAsync<ApiResponse<StaffRoleResponse>>())!.Data!.Id;
-        var hire = await co.Client.PostAsJsonAsync("/api/v1/users", new
-        {
-            name = "Clerk", email = $"clerk-{Guid.NewGuid():N}@test.local", password = DatabaseFixture.TestPassword,
-            role = "venue_staff", staffRoleId = roleId,
-        });
-        Assert.Equal(HttpStatusCode.OK, hire.StatusCode);
-        var clerkId = (await hire.Content.ReadFromJsonAsync<ApiResponse<UserResponse>>())!.Data!.Id;
-        return await _fx.CreateClientForUserAsync(clerkId);
-    }
-
     [Fact]
     public async Task AClerkWhoCannotRecordPayments_CanCancel_ButTheMoneyStays()
     {
         var co = await NewCompany();
-        var clerk = await ClerkWith(co, StaffPermissions.BookingsView, StaffPermissions.BookingsManage);
+        var clerk = await _fx.ClerkWith(co.Client, StaffPermissions.BookingsView, StaffPermissions.BookingsManage);
 
         var refundable = await PaidCounterBooking(co, 5, "10:00");
         Assert.Equal(HttpStatusCode.Forbidden,
