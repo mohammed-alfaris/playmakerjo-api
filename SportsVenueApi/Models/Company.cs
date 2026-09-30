@@ -34,6 +34,46 @@ public class Company
     [Column("max_staff")]
     public int? MaxStaff { get; set; }
 
+    // ── Billing ─────────────────────────────────────────────────────────────
+    //
+    // What PlayMaker charges this company. Invoices are drafted from these on demand (the
+    // admin presses Generate for a month) — nothing here charges anyone by itself.
+
+    /// <summary>"monthly" or "annual" (twelve months for the price of ten, no setup fee).</summary>
+    [Column("billing_cycle")]
+    [MaxLength(10)]
+    public string BillingCycle { get; set; } = "monthly";
+
+    /// <summary>
+    /// Last free day (Amman calendar date). A month is billed only once the trial ended before
+    /// it began — a trial ending mid-month leaves the rest of that month free too.
+    /// </summary>
+    [Column("trial_ends_on")]
+    public DateTime? TrialEndsOn { get; set; }
+
+    /// <summary>This company's price for its first venue. Null = the platform default.</summary>
+    [Column("price_first_venue")]
+    public double? PriceFirstVenue { get; set; }
+
+    /// <summary>This company's price per additional venue. Null = the platform default.</summary>
+    [Column("price_extra_venue")]
+    public double? PriceExtraVenue { get; set; }
+
+    /// <summary>No setup fee for this company (it is never charged on an annual plan either).</summary>
+    [Column("setup_fee_waived")]
+    public bool SetupFeeWaived { get; set; }
+
+    /// <summary>
+    /// Set by an admin to stop the company working: its owner and staff lose the back office
+    /// (they can still sign in and see their invoices) and its venues leave the app. Null = working.
+    /// </summary>
+    [Column("suspended_at")]
+    public DateTime? SuspendedAt { get; set; }
+
+    [Column("suspended_reason")]
+    [MaxLength(255)]
+    public string? SuspendedReason { get; set; }
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

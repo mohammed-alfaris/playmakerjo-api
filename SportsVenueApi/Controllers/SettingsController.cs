@@ -60,6 +60,10 @@ public class SettingsController : ControllerBase
         if (req.DefaultLimits is { } limits && (limits.MaxVenues < 0 || limits.MaxStaff < 0))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Limits cannot be negative." });
 
+        if (req.Billing is { } b && (b.PriceFirstVenue < 0 || b.PriceExtraVenue < 0 || b.SetupFee < 0
+                || b.TrialDays is < 0 or > 365 || b.PaymentTermsDays is < 0 or > 120))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Billing defaults are out of range." });
+
         if (req.PlatformFeePercentage is { } fee && (fee < 0 || fee > 100))
             return BadRequest(new ApiResponse<object>
             {
@@ -77,6 +81,14 @@ public class SettingsController : ControllerBase
                 row.MaintenanceMessageEn = req.MaintenanceMessageEn;
             if (req.MaintenanceMessageAr != null)
                 row.MaintenanceMessageAr = req.MaintenanceMessageAr;
+            if (req.Billing != null)
+            {
+                row.PriceFirstVenue = req.Billing.PriceFirstVenue;
+                row.PriceExtraVenue = req.Billing.PriceExtraVenue;
+                row.SetupFee = req.Billing.SetupFee;
+                row.TrialDays = req.Billing.TrialDays;
+                row.PaymentTermsDays = req.Billing.PaymentTermsDays;
+            }
             if (req.DefaultLimits != null)
             {
                 row.DefaultMaxVenues = req.DefaultLimits.MaxVenues;
@@ -103,6 +115,14 @@ public class SettingsController : ControllerBase
         MaintenanceMessageAr = row.MaintenanceMessageAr,
         DefaultMaxVenues = row.DefaultMaxVenues,
         DefaultMaxStaff = row.DefaultMaxStaff,
+        Billing = new BillingDefaults
+        {
+            PriceFirstVenue = row.PriceFirstVenue,
+            PriceExtraVenue = row.PriceExtraVenue,
+            SetupFee = row.SetupFee,
+            TrialDays = row.TrialDays,
+            PaymentTermsDays = row.PaymentTermsDays,
+        },
         UpdatedAt = row.UpdatedAt.ToString("o"),
     };
 }

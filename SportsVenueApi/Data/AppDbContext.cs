@@ -22,6 +22,8 @@ public class AppDbContext : DbContext
     public DbSet<PlayerWaitlist> PlayerWaitlist => Set<PlayerWaitlist>();
     public DbSet<VenueWaitlist> VenueWaitlist => Set<VenueWaitlist>();
     public DbSet<VenueBlock> VenueBlocks => Set<VenueBlock>();
+    public DbSet<Invoice> Invoices => Set<Invoice>();
+    public DbSet<InvoiceLine> InvoiceLines => Set<InvoiceLine>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<VenueFeature> VenueFeatures => Set<VenueFeature>();
     public DbSet<Company> Companies => Set<Company>();
@@ -105,6 +107,21 @@ public class AppDbContext : DbContext
         {
             e.HasOne(g => g.Player).WithMany().HasForeignKey(g => g.PlayerId);
             e.HasOne(g => g.Venue).WithMany().HasForeignKey(g => g.VenueId);
+        });
+
+        modelBuilder.Entity<Invoice>(e =>
+        {
+            // Restrict, not cascade: an owner who has been billed cannot be deleted out from
+            // under the books.
+            e.HasOne(i => i.Owner).WithMany().HasForeignKey(i => i.OwnerId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(i => i.Number).IsUnique();
+            e.HasIndex(i => new { i.OwnerId, i.Period });
+            e.HasIndex(i => new { i.Status, i.DueOn });
+        });
+
+        modelBuilder.Entity<InvoiceLine>(e =>
+        {
+            e.HasOne(l => l.Invoice).WithMany(i => i.Lines).HasForeignKey(l => l.InvoiceId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<VenueBlock>(e =>

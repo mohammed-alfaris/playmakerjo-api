@@ -240,7 +240,9 @@ public class BookingsController : ControllerBase
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
-        if (venue.Status != "active")
+        // A suspended company's venues take no bookings, from the app or anywhere else.
+        if (venue.Status != "active"
+            || await _db.Companies.AnyAsync(c => c.OwnerId == venue.OwnerId && c.SuspendedAt != null))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Venue is not active" });
 
         // Validate sport is offered by venue
@@ -1284,7 +1286,9 @@ public class BookingsController : ControllerBase
         var venue = await _db.Venues.FindAsync(req.VenueId);
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
-        if (venue.Status != "active")
+        // A suspended company's venues take no bookings, from the app or anywhere else.
+        if (venue.Status != "active"
+            || await _db.Companies.AnyAsync(c => c.OwnerId == venue.OwnerId && c.SuspendedAt != null))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Venue is not active" });
         if (!venue.Sports.Contains(req.Sport, StringComparer.OrdinalIgnoreCase))
             return BadRequest(new ApiResponse<object> { Success = false, Message = $"Venue does not offer {req.Sport}" });

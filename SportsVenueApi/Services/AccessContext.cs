@@ -47,6 +47,13 @@ public sealed class AccessContext
     /// </summary>
     public string? CompanyId { get; private set; }
 
+    /// <summary>
+    /// The caller's company exists but PlayMaker has suspended it. <see cref="CompanyId"/> is
+    /// then null — no back office — and this says why, so the dashboard can explain instead of
+    /// showing empty screens.
+    /// </summary>
+    public bool CompanySuspended { get; private set; }
+
     public string? StaffRoleId { get; private set; }
     public string? StaffRoleName { get; private set; }
 
@@ -116,6 +123,9 @@ public sealed class AccessContext
         return q;
     }
 
+    private Task<bool> SuspendedAsync(string ownerId, CancellationToken ct) =>
+        _db.Companies.AsNoTracking().AnyAsync(c => c.OwnerId == ownerId && c.SuspendedAt != null, ct);
+
     public async Task LoadAsync(ClaimsPrincipal principal, CancellationToken ct = default)
     {
         var id = principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? principal.FindFirstValue("sub");
@@ -133,6 +143,7 @@ public sealed class AccessContext
 
         if (IsOwner)
         {
+            if (await SuspendedAsync(user.Id, ct)) { CompanySuspended = true; return; }
             CompanyId = user.Id;
             return;
         }
@@ -150,6 +161,7 @@ public sealed class AccessContext
         var employerActive = await _db.Users.AsNoTracking().AnyAsync(u =>
             u.Id == user.ManagedByOwnerId && u.Role == "venue_owner" && u.Status == "active", ct);
         if (!employerActive) return;
+        if (await SuspendedAsync(user.ManagedByOwnerId, ct)) { CompanySuspended = true; return; }
 
         CompanyId = user.ManagedByOwnerId;
 

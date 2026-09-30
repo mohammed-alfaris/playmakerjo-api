@@ -287,7 +287,7 @@ public class VenuesController : ControllerBase
         if (featureErr != null)
             return BadRequest(new ApiResponse<object> { Success = false, Message = featureErr });
 
-        var baseQuery = WithFeatures(_db.Venues.Where(v => v.Status == "active"), featureIds);
+        var baseQuery = WithFeatures(_db.Venues.OpenToPublic(_db), featureIds);
 
         if (!string.IsNullOrEmpty(search))
             baseQuery = baseQuery.Where(v => EF.Functions.Like(v.Name, $"%{search}%")
@@ -324,8 +324,9 @@ public class VenuesController : ControllerBase
     public async Task<IActionResult> PublicGet(string venueId)
     {
         var venue = await _db.Venues
+            .OpenToPublic(_db)
             .Include(v => v.Owner)
-            .FirstOrDefaultAsync(v => v.Id == venueId && v.Status == "active");
+            .FirstOrDefaultAsync(v => v.Id == venueId);
 
         if (venue == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
@@ -368,7 +369,7 @@ public class VenuesController : ControllerBase
         if (featureErr != null)
             return BadRequest(new ApiResponse<object> { Success = false, Message = featureErr });
 
-        var baseQuery = WithFeatures(_db.Venues.Where(v => v.Status == "active"), featureIds);
+        var baseQuery = WithFeatures(_db.Venues.OpenToPublic(_db), featureIds);
 
         if (!string.IsNullOrEmpty(sport))
             baseQuery = baseQuery.Where(v => v.SportsJson.Contains($"\"{sport}\""));
@@ -885,6 +886,10 @@ public class VenuesController : ControllerBase
     {
         var venue = await _db.Venues.FindAsync(venueId);
         if (venue == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
+
+        // A suspended company's venues are off the app: nothing to offer.
+        if (await _db.Companies.AnyAsync(c => c.OwnerId == venue.OwnerId && c.SuspendedAt != null))
             return NotFound(new ApiResponse<object> { Success = false, Message = "Venue not found" });
 
         if (string.IsNullOrEmpty(date) || !DateTime.TryParse(date, out var bookingDate))

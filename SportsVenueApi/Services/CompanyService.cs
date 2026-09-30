@@ -47,6 +47,8 @@ public sealed class CompanyService
             Name = owner.Name.Length > 120 ? owner.Name[..120] : owner.Name,
             MaxVenues = settings.DefaultMaxVenues,
             MaxStaff = settings.DefaultMaxStaff,
+            // Every new company starts on the free trial; the last free day is inclusive.
+            TrialEndsOn = settings.TrialDays > 0 ? PlatformConstants.JordanToday().AddDays(settings.TrialDays - 1) : null,
         };
         _db.Companies.Add(company);
 

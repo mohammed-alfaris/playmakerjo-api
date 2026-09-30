@@ -72,6 +72,13 @@ public class AccessSummary
 
     [JsonPropertyName("venueIds")]
     public List<string> VenueIds { get; set; } = [];
+
+    /// <summary>
+    /// PlayMaker has suspended the caller's company: the back office is closed (the owner can
+    /// still see billing). The dashboard shows a notice instead of empty pages.
+    /// </summary>
+    [JsonPropertyName("companySuspended")]
+    public bool CompanySuspended { get; set; }
 }
 
 public class StaffRoleRef
