@@ -28,11 +28,13 @@ public class VenueBlocksController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly AccessContext _access;
+    private readonly AuditLog _audit;
 
-    public VenueBlocksController(AppDbContext db, AccessContext access)
+    public VenueBlocksController(AppDbContext db, AccessContext access, AuditLog audit)
     {
         _db = db;
         _access = access;
+        _audit = audit;
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -109,6 +111,10 @@ public class VenueBlocksController : ControllerBase
             CreatedByUserId = UserId,
         };
         _db.VenueBlocks.Add(block);
+        var span = $"{Local(block.StartsAt)} – {Local(block.EndsAt)}".Replace("T", " ");
+        var reason = block.Reason == null ? "" : $" ({block.Reason})";
+        await _audit.AddAsync("block.created", venue.OwnerId, "venue", venue.Id,
+            $"Blocked {venue.Name} {span}{reason}", $"حجب {venue.Name} {span}{reason}");
         await _db.SaveChangesAsync();
 
         // The block does not cancel anything. Bookings already inside it are listed so the
@@ -157,6 +163,9 @@ public class VenueBlocksController : ControllerBase
             return Forbid();
 
         _db.VenueBlocks.Remove(block);
+        var span = $"{Local(block.StartsAt)} – {Local(block.EndsAt)}".Replace("T", " ");
+        await _audit.AddAsync("block.removed", block.Venue.OwnerId, "venue", block.VenueId,
+            $"Removed the block on {block.Venue.Name} {span}", $"إزالة حجب {block.Venue.Name} {span}");
         await _db.SaveChangesAsync();
         return Ok(new ApiResponse<object> { Data = null, Message = "Block removed" });
     }

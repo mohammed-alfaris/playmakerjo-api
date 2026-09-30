@@ -22,8 +22,11 @@ public class SettingsController : ControllerBase
     private readonly SettingsService _settings;
     private readonly ILogger<SettingsController> _logger;
 
-    public SettingsController(SettingsService settings, ILogger<SettingsController> logger)
+    private readonly AuditLog _audit;
+
+    public SettingsController(SettingsService settings, ILogger<SettingsController> logger, AuditLog audit)
     {
+        _audit = audit;
         _settings = settings;
         _logger = logger;
     }
@@ -70,6 +73,18 @@ public class SettingsController : ControllerBase
                 Success = false,
                 Message = "platformFeePercentage must be between 0 and 100",
             });
+
+        // Staged on the same scoped context, so it commits with the settings row itself.
+        var parts = new List<(string En, string Ar)>();
+        if (req.PlatformFeePercentage is { } newFee) parts.Add(($"commission {newFee}%", $"العمولة {newFee}%"));
+        if (req.MaintenanceMode is { } mm) parts.Add((mm ? "maintenance on" : "maintenance off", mm ? "تفعيل الصيانة" : "إيقاف الصيانة"));
+        if (req.DefaultLimits != null) parts.Add(("default limits", "الحدود الافتراضية"));
+        if (req.Billing is { } bd) parts.Add(($"prices {bd.PriceFirstVenue} + {bd.PriceExtraVenue} JOD, setup {bd.SetupFee} JOD, trial {bd.TrialDays} days",
+            $"الأسعار {bd.PriceFirstVenue} + {bd.PriceExtraVenue} د.أ، التأسيس {bd.SetupFee} د.أ، التجربة {bd.TrialDays} يوم"));
+        if (parts.Count > 0)
+            await _audit.AddAsync("settings.updated", null, "settings", "1",
+                $"Platform settings: {string.Join(", ", parts.Select(p => p.En))}",
+                $"إعدادات المنصة: {string.Join("، ", parts.Select(p => p.Ar))}");
 
         var updated = await _settings.UpdateAsync(row =>
         {

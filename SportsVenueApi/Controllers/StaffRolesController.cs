@@ -27,12 +27,14 @@ public class StaffRolesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly AccessContext _access;
     private readonly CompanyService _companies;
+    private readonly AuditLog _audit;
 
-    public StaffRolesController(AppDbContext db, AccessContext access, CompanyService companies)
+    public StaffRolesController(AppDbContext db, AccessContext access, CompanyService companies, AuditLog audit)
     {
         _db = db;
         _access = access;
         _companies = companies;
+        _audit = audit;
     }
 
     /// <summary>Whose roles: the owner's own; an admin must name a company. Null = forbidden.</summary>
@@ -95,6 +97,7 @@ public class StaffRolesController : ControllerBase
             Permissions = Normalize(req.Permissions!),
         };
         _db.StaffRoles.Add(role);
+        await _audit.AddAsync("role.created", companyId, "role", role.Id, $"Created the role {role.Name}", $"إنشاء الدور {role.Name}");
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<StaffRoleResponse> { Data = ToDto(role, 0), Message = "Role created" });
@@ -132,6 +135,8 @@ public class StaffRolesController : ControllerBase
         }
 
         role.UpdatedAt = DateTime.UtcNow;
+        await _audit.AddAsync("role.updated", companyId, "role", role.Id,
+            $"Changed the role {role.Name}: {string.Join(", ", role.Permissions)}", $"تعديل الدور {role.Name}: {string.Join("، ", role.Permissions)}");
         await _db.SaveChangesAsync();
 
         var count = (await StaffCountsAsync(companyId)).GetValueOrDefault(role.Id);
@@ -161,6 +166,7 @@ public class StaffRolesController : ControllerBase
             });
 
         _db.StaffRoles.Remove(role);
+        await _audit.AddAsync("role.deleted", companyId, "role", role.Id, $"Deleted the role {role.Name}", $"حذف الدور {role.Name}");
         await _db.SaveChangesAsync();
         return Ok(new ApiResponse<object> { Message = "Role deleted" });
     }

@@ -23,10 +23,12 @@ public class VenuesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly string _uploadsBaseUrl;
     private readonly AccessContext _access;
+    private readonly AuditLog _audit;
     private readonly CompanyService _companies;
 
-    public VenuesController(AppDbContext db, IConfiguration config, AccessContext access, CompanyService companies)
+    public VenuesController(AppDbContext db, IConfiguration config, AccessContext access, CompanyService companies, AuditLog audit)
     {
+        _audit = audit;
         _db = db;
         _uploadsBaseUrl = config["Uploads:BaseUrl"]?.TrimEnd('/') ?? "";
         _access = access;
@@ -605,6 +607,7 @@ public class VenuesController : ControllerBase
                 return Conflict(new ApiResponse<object> { Success = false, Message = full });
 
             _db.Venues.Add(venue);
+            await _audit.AddAsync("venue.created", ownerId, "venue", venue.Id, $"Added venue {venue.Name}", $"إضافة ملعب {venue.Name}");
             await _db.SaveChangesAsync();
             await tx.CommitAsync();
         }
@@ -644,6 +647,9 @@ public class VenuesController : ControllerBase
 
         if (!_access.CanManageVenue(venue))
             return StatusCode(403, new ApiResponse<object> { Success = false, Message = "You do not have permission to manage this venue" });
+
+        var was = (venue.Name, venue.Status, venue.PricePerHour, venue.DepositPercentage, venue.FreeCancelHours,
+                   venue.PitchesJson, venue.OperatingHoursJson, venue.CliqAlias);
 
         // Ownership reassignment is admin-only. Echoing back the current owner is a no-op.
         // Moving a venue into a company counts against that company's limit, so the check holds
@@ -818,6 +824,24 @@ public class VenuesController : ControllerBase
         if (scopeErr != null)
             return BadRequest(new ApiResponse<object> { Success = false, Message = scopeErr });
 
+        // What changed, in words — the log is for "who changed the price?", not for a JSON diff.
+        var changes = new List<(string En, string Ar)>();
+        if (was.Name != venue.Name) changes.Add(($"name to {venue.Name}", $"الاسم إلى {venue.Name}"));
+        if (was.Status != venue.Status) changes.Add(($"status to {venue.Status}", $"الحالة إلى {venue.Status}"));
+        if (Math.Abs(was.PricePerHour - venue.PricePerHour) > 0.0005)
+            changes.Add(($"price {AuditLog.Jod(was.PricePerHour)} to {AuditLog.Jod(venue.PricePerHour)}/h", $"السعر من {AuditLog.Jod(was.PricePerHour)} إلى {AuditLog.Jod(venue.PricePerHour)}/ساعة"));
+        if (Math.Abs(was.DepositPercentage - venue.DepositPercentage) > 0.0005)
+            changes.Add(($"deposit {was.DepositPercentage}% to {venue.DepositPercentage}%", $"العربون من {was.DepositPercentage}% إلى {venue.DepositPercentage}%"));
+        if (was.FreeCancelHours != venue.FreeCancelHours)
+            changes.Add(($"free cancellation {was.FreeCancelHours}h to {venue.FreeCancelHours}h", $"الإلغاء المجاني من {was.FreeCancelHours} إلى {venue.FreeCancelHours} ساعة"));
+        if (was.PitchesJson != venue.PitchesJson) changes.Add(("pitches or pitch prices", "الملاعب أو أسعارها"));
+        if (was.OperatingHoursJson != venue.OperatingHoursJson) changes.Add(("opening hours", "ساعات العمل"));
+        if (was.CliqAlias != venue.CliqAlias) changes.Add(("CliQ alias", "حساب كليك"));
+        if (changes.Count > 0)
+            await _audit.AddAsync("venue.updated", venue.OwnerId, "venue", venue.Id,
+                $"Changed {venue.Name}: {string.Join(", ", changes.Select(c => c.En))}",
+                $"تعديل {venue.Name}: {string.Join("، ", changes.Select(c => c.Ar))}");
+
         await _db.SaveChangesAsync();
         if (reassignTx != null) await reassignTx.CommitAsync();
 
@@ -868,6 +892,7 @@ public class VenuesController : ControllerBase
             });
 
         _db.Venues.Remove(venue);
+        await _audit.AddAsync("venue.deleted", venue.OwnerId, "venue", venue.Id, $"Deleted venue {venue.Name}", $"حذف ملعب {venue.Name}");
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<object> { Data = null, Message = "Venue deleted" });

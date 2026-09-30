@@ -34,10 +34,12 @@ public class InvoicesController : ControllerBase
     private readonly BillingService _billing;
     private readonly NotificationService _notifications;
     private readonly ILogger<InvoicesController> _logger;
+    private readonly AuditLog _audit;
 
     public InvoicesController(AppDbContext db, AccessContext access, BillingService billing,
-        NotificationService notifications, ILogger<InvoicesController> logger)
+        NotificationService notifications, ILogger<InvoicesController> logger, AuditLog audit)
     {
+        _audit = audit;
         _db = db;
         _access = access;
         _billing = billing;
@@ -176,6 +178,10 @@ public class InvoicesController : ControllerBase
         if (invoice.Lines.Count == 0 || invoice.Total <= 0) return Fail(400, "There is nothing to bill on this invoice");
 
         await _billing.IssueAsync(invoice);
+        await _audit.AddAsync("invoice.issued", invoice.OwnerId, "invoice", invoice.Id,
+            $"Invoice {invoice.Number} issued for {invoice.Period}: {AuditLog.Jod(invoice.Total)}",
+            $"إصدار الفاتورة {invoice.Number} عن {invoice.Period}: {AuditLog.Jod(invoice.Total)}");
+        await _db.SaveChangesAsync();
 
         try { await _notifications.NotifyInvoiceIssued(invoice); }
         catch (Exception ex) { _logger.LogWarning(ex, "Invoice notification failed for {InvoiceId}", invoice.Id); }
@@ -196,6 +202,9 @@ public class InvoicesController : ControllerBase
         invoice.PaidAt = DateTime.UtcNow;
         invoice.PaidMethod = req.Method;
         invoice.PaidReference = string.IsNullOrWhiteSpace(req.Reference) ? null : req.Reference.Trim();
+        await _audit.AddAsync("invoice.paid", invoice.OwnerId, "invoice", invoice.Id,
+            $"Invoice {invoice.Number} paid ({req.Method}): {AuditLog.Jod(invoice.Total)}",
+            $"دفع الفاتورة {invoice.Number} ({req.Method}): {AuditLog.Jod(invoice.Total)}");
         await _db.SaveChangesAsync();
         return Ok(new ApiResponse<InvoiceResponse> { Data = (await ToDtosAsync([invoice]))[0], Message = "Payment recorded" });
     }
@@ -210,6 +219,11 @@ public class InvoicesController : ControllerBase
 
         invoice.Status = "void";
         invoice.VoidReason = string.IsNullOrWhiteSpace(req?.Reason) ? null : req!.Reason!.Trim();
+        // Voiding a draft the owner never saw is housekeeping; voiding an issued one is news to them.
+        if (invoice.Number != null)
+            await _audit.AddAsync("invoice.voided", invoice.OwnerId, "invoice", invoice.Id,
+                $"Invoice {invoice.Number} voided{(invoice.VoidReason == null ? "" : $": {invoice.VoidReason}")}",
+                $"إلغاء الفاتورة {invoice.Number}{(invoice.VoidReason == null ? "" : $": {invoice.VoidReason}")}");
         await _db.SaveChangesAsync();
         return Ok(new ApiResponse<InvoiceResponse> { Data = (await ToDtosAsync([invoice]))[0], Message = "Invoice voided" });
     }

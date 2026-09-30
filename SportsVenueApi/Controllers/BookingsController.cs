@@ -28,6 +28,7 @@ public class BookingsController : ControllerBase
     private readonly string _uploadsBaseUrl;
     private readonly string _contentRoot;
     private readonly AccessContext _access;
+    private readonly AuditLog _audit;
 
     public BookingsController(
         AppDbContext db,
@@ -37,8 +38,10 @@ public class BookingsController : ControllerBase
         ExpiryPolicy expiry,
         IConfiguration config,
         IWebHostEnvironment env,
-        AccessContext access)
+        AccessContext access,
+        AuditLog audit)
     {
+        _audit = audit;
         _db = db;
         _notifications = notifications;
         _settings = settings;
@@ -384,6 +387,12 @@ public class BookingsController : ControllerBase
             if (receipt != null) _db.Payments.Add(receipt);
         }
 
+        var paidNote = booking.AmountPaid > 0 ? $", paid {AuditLog.Jod(booking.AmountPaid)}" : "";
+        var paidNoteAr = booking.AmountPaid > 0 ? $"، مدفوع {AuditLog.Jod(booking.AmountPaid)}" : "";
+        await _audit.AddAsync("booking.created", venue.OwnerId, "booking", booking.Id,
+            $"{(isManual ? "Counter" : "App")} booking {(isManual ? req.CustomerName ?? "" : "")} {bookingDate:yyyy-MM-dd} {req.StartTime} at {venue.Name}: {AuditLog.Jod(totalAmount)}{paidNote}".Replace("  ", " "),
+            $"حجز {(isManual ? "من الاستقبال" : "من التطبيق")} {(isManual ? req.CustomerName ?? "" : "")} {bookingDate:yyyy-MM-dd} {req.StartTime} في {venue.Name}: {AuditLog.Jod(totalAmount)}{paidNoteAr}".Replace("  ", " "));
+
         // One SaveChanges, inside the venue lock: the booking and its receipt commit
         // together or neither does. Money recorded against a booking that failed to
         // insert would be worse than no ledger at all.
@@ -489,6 +498,9 @@ public class BookingsController : ControllerBase
                 choice == CancellationPolicy.All ? "Refunded on cancellation" : "Refunded by the cancellation policy");
             if (row != null) _db.Payments.Add(row);
         }
+        await _audit.AddAsync("booking.cancelled", booking.Venue.OwnerId, "booking", booking.Id,
+            $"Cancelled {AuditLog.Describe(booking)}" + (refund > 0 ? $", refunded {AuditLog.Jod(refund)}" : booking.AmountPaid > 0 ? $", kept {AuditLog.Jod(booking.AmountPaid)}" : ""),
+            $"إلغاء {AuditLog.Describe(booking)}" + (refund > 0 ? $"، إعادة {AuditLog.Jod(refund)}" : booking.AmountPaid > 0 ? $"، الاحتفاظ بـ {AuditLog.Jod(booking.AmountPaid)}" : ""));
         await _db.SaveChangesAsync();
 
         // Notify player + owner about cancellation (non-blocking)
@@ -530,6 +542,10 @@ public class BookingsController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = error! });
 
         _db.Payments.Add(row);
+        var why = string.IsNullOrWhiteSpace(req.Note) ? "" : $" ({req.Note.Trim()})";
+        await _audit.AddAsync($"payment.{req.Kind}", booking.Venue.OwnerId, "booking", booking.Id,
+            $"{(req.Kind == "refund" ? "Refunded" : "Corrected")} {AuditLog.Jod(req.Amount)} on {AuditLog.Describe(booking)}{why}",
+            $"{(req.Kind == "refund" ? "إعادة" : "تصحيح")} {AuditLog.Jod(req.Amount)} على {AuditLog.Describe(booking)}{why}");
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<BookingResponse>
@@ -636,6 +652,8 @@ public class BookingsController : ControllerBase
         if (!EditableStatuses.Contains(booking.Status))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Only upcoming bookings can be changed." });
 
+        var before = $"{booking.Date:yyyy-MM-dd} {booking.StartTime} · {booking.Duration} min";
+        var priceBefore = booking.TotalAmount;
         var priceGiven = req.TotalAmount is { } asked && Math.Abs(asked - booking.TotalAmount) > 0.0005;
         if (priceGiven && !CanOnBooking(StaffPermissions.PaymentsRecord, booking))
             return Forbid();
@@ -712,6 +730,16 @@ public class BookingsController : ControllerBase
 
         if (req.Notes != null)
             booking.Notes = req.Notes;
+
+        var after = $"{booking.Date:yyyy-MM-dd} {booking.StartTime} · {booking.Duration} min";
+        if (after != before)
+            await _audit.AddAsync("booking.moved", booking.Venue.OwnerId, "booking", booking.Id,
+                $"Moved {AuditLog.Describe(booking)}: from {before} to {after}",
+                $"نقل {AuditLog.Describe(booking)}: من {before} إلى {after}");
+        if (Math.Abs(booking.TotalAmount - priceBefore) > 0.0005)
+            await _audit.AddAsync("booking.repriced", booking.Venue.OwnerId, "booking", booking.Id,
+                $"Price of {AuditLog.Describe(booking)}: {AuditLog.Jod(priceBefore)} to {AuditLog.Jod(booking.TotalAmount)}",
+                $"سعر {AuditLog.Describe(booking)}: من {AuditLog.Jod(priceBefore)} إلى {AuditLog.Jod(booking.TotalAmount)}");
 
         await _db.SaveChangesAsync();
         await tx.CommitAsync();
@@ -792,6 +820,9 @@ public class BookingsController : ControllerBase
         // defence in depth rather than a live bug — but "completed" is exactly as terminal
         // as "cancelled", and the two should not disagree about their own invariant.
         booking.PaymentDeadlineAt = null;
+        await _audit.AddAsync("booking.completed", booking.Venue.OwnerId, "booking", booking.Id,
+            $"Completed {AuditLog.Describe(booking)}" + (remaining > PaymentLedger.Epsilon ? $", collected {AuditLog.Jod(remaining)}" : ""),
+            $"إنهاء {AuditLog.Describe(booking)}" + (remaining > PaymentLedger.Epsilon ? $"، تحصيل {AuditLog.Jod(remaining)}" : ""));
         // One SaveChanges: the status and its matching ledger row commit together or not at
         // all. Splitting them is how a booking ends up completed with the money unrecorded.
         await _db.SaveChangesAsync();
@@ -829,6 +860,8 @@ public class BookingsController : ControllerBase
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Only confirmed bookings can be marked as no-show" });
 
         booking.Status = "no_show";
+        await _audit.AddAsync("booking.no_show", booking.Venue.OwnerId, "booking", booking.Id,
+            $"No-show: {AuditLog.Describe(booking)}", $"لم يحضر: {AuditLog.Describe(booking)}");
         await _db.SaveChangesAsync();
 
         try { await _notifications.NotifyNoShow(booking); }
@@ -886,6 +919,9 @@ public class BookingsController : ControllerBase
         // The money is in. Whatever hold was on this slot, it is not an unpaid one any more.
         booking.PaymentDeadlineAt = null;
         _db.Payments.Add(receipt);
+        await _audit.AddAsync("payment.recorded", booking.Venue.OwnerId, "booking", booking.Id,
+            $"Recorded {AuditLog.Jod(receipt.Amount)} paid on {AuditLog.Describe(booking)}",
+            $"تسجيل دفع {AuditLog.Jod(receipt.Amount)} على {AuditLog.Describe(booking)}");
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<BookingResponse> { Data = ToDto(booking), Message = "Marked as paid" });
@@ -1201,6 +1237,9 @@ public class BookingsController : ControllerBase
                 : PaymentDeadline.Compute(DateTime.UtcNow, booking.Date, booking.StartTime, _expiry);
         }
 
+        await _audit.AddAsync(req.Approved ? "proof.approved" : "proof.rejected", booking.Venue.OwnerId, "booking", booking.Id,
+            $"{(req.Approved ? "Approved" : "Rejected")} the CliQ proof for {AuditLog.Describe(booking)}",
+            $"{(req.Approved ? "قبول" : "رفض")} إثبات الدفع لحجز {AuditLog.Describe(booking)}");
         await _db.SaveChangesAsync();
 
         // Notify player about proof review result (non-blocking — don't fail the request)
@@ -1619,6 +1658,9 @@ public class BookingsController : ControllerBase
             }
         }
         group.Status = "cancelled";
+        await _audit.AddAsync("series.cancelled", group.Venue.OwnerId, "series", group.Id,
+            $"Cancelled a weekly series at {group.Venue.Name}: {toCancel.Count} session(s)" + (refunded > 0 ? $", refunded {AuditLog.Jod(refunded)}" : ""),
+            $"إلغاء سلسلة أسبوعية في {group.Venue.Name}: {toCancel.Count} جلسة" + (refunded > 0 ? $"، إعادة {AuditLog.Jod(refunded)}" : ""));
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<object>

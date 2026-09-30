@@ -24,6 +24,7 @@ public class AppDbContext : DbContext
     public DbSet<VenueBlock> VenueBlocks => Set<VenueBlock>();
     public DbSet<Invoice> Invoices => Set<Invoice>();
     public DbSet<InvoiceLine> InvoiceLines => Set<InvoiceLine>();
+    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<VenueFeature> VenueFeatures => Set<VenueFeature>();
     public DbSet<Company> Companies => Set<Company>();
@@ -107,6 +108,13 @@ public class AppDbContext : DbContext
         {
             e.HasOne(g => g.Player).WithMany().HasForeignKey(g => g.PlayerId);
             e.HasOne(g => g.Venue).WithMany().HasForeignKey(g => g.VenueId);
+        });
+
+        modelBuilder.Entity<AuditEvent>(e =>
+        {
+            // Read newest-first per company; no foreign keys, so the log outlives what it names.
+            e.HasIndex(x => new { x.OwnerId, x.At });
+            e.HasIndex(x => x.At);
         });
 
         modelBuilder.Entity<Invoice>(e =>
@@ -230,6 +238,7 @@ public class AppDbContext : DbContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         GuardPaymentLedger();
+        GuardAuditLog();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
@@ -237,6 +246,7 @@ public class AppDbContext : DbContext
         bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         GuardPaymentLedger();
+        GuardAuditLog();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
@@ -253,6 +263,15 @@ public class AppDbContext : DbContext
     /// of the record, and quietly editing the past is precisely what an audit trail exists
     /// to make impossible.
     /// </summary>
+    /// <summary>The activity log is append-only for the same reason the ledger is.</summary>
+    private void GuardAuditLog()
+    {
+        foreach (var entry in ChangeTracker.Entries<AuditEvent>())
+            if (entry.State is EntityState.Modified or EntityState.Deleted)
+                throw new InvalidOperationException(
+                    "The activity log is append-only: an event may be written once and never changed or removed.");
+    }
+
     private void GuardPaymentLedger()
     {
         foreach (var entry in ChangeTracker.Entries<Payment>())

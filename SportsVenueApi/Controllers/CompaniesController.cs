@@ -27,9 +27,11 @@ public class CompaniesController : ControllerBase
     private readonly AccessContext _access;
     private readonly CompanyService _companies;
     private readonly BillingService _billing;
+    private readonly AuditLog _audit;
 
-    public CompaniesController(AppDbContext db, AccessContext access, CompanyService companies, BillingService billing)
+    public CompaniesController(AppDbContext db, AccessContext access, CompanyService companies, BillingService billing, AuditLog audit)
     {
+        _audit = audit;
         _db = db;
         _access = access;
         _companies = companies;
@@ -205,6 +207,12 @@ public class CompaniesController : ControllerBase
         }
         if (req.SetupFeeWaived is { } waived) company.SetupFeeWaived = waived;
 
+        var (first, extra) = await _billing.PricesForAsync(company);
+        var trial = company.TrialEndsOn?.ToString("yyyy-MM-dd") ?? "none";
+        await _audit.AddAsync("company.billing", ownerId, "company", ownerId,
+            $"Billing set: {company.BillingCycle}, {AuditLog.Jod(first)} + {AuditLog.Jod(extra)} per extra venue, trial ends {trial}{(company.SetupFeeWaived ? ", setup fee waived" : "")}",
+            $"الفوترة: {(company.BillingCycle == BillingService.Annual ? "سنوي" : "شهري")}، {AuditLog.Jod(first)} + {AuditLog.Jod(extra)} لكل ملعب إضافي، نهاية التجربة {trial}{(company.SetupFeeWaived ? "، دون رسوم تأسيس" : "")}");
+
         company.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
         return Ok(new ApiResponse<CompanyResponse> { Data = await ToDtoAsync(company), Message = "Billing updated" });
@@ -233,6 +241,10 @@ public class CompaniesController : ControllerBase
             company.SuspendedAt = null;
             company.SuspendedReason = null;
         }
+        var why = company.SuspendedReason == null ? "" : $": {company.SuspendedReason}";
+        await _audit.AddAsync(req.Suspended ? "company.suspended" : "company.restored", ownerId, "company", ownerId,
+            req.Suspended ? $"PlayMaker suspended the company{why}" : "PlayMaker restored the company",
+            req.Suspended ? $"أوقفت PlayMaker الشركة{why}" : "أعادت PlayMaker تفعيل الشركة");
 
         company.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
