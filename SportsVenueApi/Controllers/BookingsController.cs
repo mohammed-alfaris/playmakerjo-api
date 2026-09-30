@@ -616,6 +616,10 @@ public class BookingsController : ControllerBase
         // would let the sweep stamp AutoCancelledAt on it later and rewrite whose decision
         // it was.
         booking.PaymentDeadlineAt = null;
+        // A proof still waiting for review is moot now. Left as "pending_review" it kept the
+        // booking in the owner's queue to approve — and approving it revived the booking.
+        if (booking.PaymentProofStatus == "pending_review")
+            booking.PaymentProofStatus = "cancelled";
         await _db.SaveChangesAsync();
 
         // Notify player + owner about cancellation (non-blocking)
@@ -1045,6 +1049,17 @@ public class BookingsController : ControllerBase
 
         if (booking.PaymentProofStatus != "pending_review")
             return BadRequest(new ApiResponse<object> { Success = false, Message = "No proof pending review" });
+
+        // A proof only counts while its booking is still waiting on it. Approving used to set
+        // "confirmed" whatever the booking had become since: a player could upload, cancel, and
+        // the owner's later approval brought the booking back — onto a slot someone else may
+        // already have taken, with a deposit recorded for a booking that no longer existed.
+        if (booking.Status != "pending_review")
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = $"This booking is no longer waiting for payment (it is {booking.Status}).",
+            });
 
         if (req.Approved)
         {
