@@ -170,6 +170,7 @@ public class BookingsController : ControllerBase
             .ToListAsync();
 
         var data = bookings.Select(b => ToDto(b)).ToList();
+        await StampRefundsAsync(data);
 
         return Ok(new ApiResponse<List<BookingResponse>>
         {
@@ -203,6 +204,7 @@ public class BookingsController : ControllerBase
             .ToListAsync();
 
         var data = bookings.Select(b => ToDto(b)).ToList();
+        await StampRefundsAsync(data);
 
         return Ok(new ApiResponse<List<BookingResponse>>
         {
@@ -230,7 +232,9 @@ public class BookingsController : ControllerBase
         if (!CanAccessBooking(booking))
             return Forbid();
 
-        return Ok(new ApiResponse<BookingResponse> { Data = ToDto(booking, includeFullProof: true) });
+        var dto = ToDto(booking, includeFullProof: true);
+        await StampRefundsAsync([dto]);
+        return Ok(new ApiResponse<BookingResponse> { Data = dto });
     }
 
     // POST /api/v1/bookings — create a new booking
@@ -507,9 +511,11 @@ public class BookingsController : ControllerBase
         try { await _notifications.NotifyBookingCancelled(booking, UserId); }
         catch (Exception ex) { _logger.LogWarning(ex, "Notification failed"); }
 
+        var result = ToDto(booking);
+        await StampRefundsAsync([result]);
         return Ok(new ApiResponse<BookingResponse>
         {
-            Data = ToDto(booking),
+            Data = result,
             Message = refund > 0
                 ? $"Booking cancelled; {refund:0.###} JOD refunded"
                 : "Booking cancelled successfully"
@@ -548,9 +554,11 @@ public class BookingsController : ControllerBase
             $"{(req.Kind == "refund" ? "إعادة" : "تصحيح")} {AuditLog.Jod(req.Amount)} على {AuditLog.Describe(booking)}{why}");
         await _db.SaveChangesAsync();
 
+        var result = ToDto(booking);
+        await StampRefundsAsync([result]);
         return Ok(new ApiResponse<BookingResponse>
         {
-            Data = ToDto(booking),
+            Data = result,
             Message = req.Kind == "refund" ? "Refund recorded" : "Correction recorded"
         });
     }
@@ -1668,6 +1676,23 @@ public class BookingsController : ControllerBase
             Data = new { cancelledCount = toCancel.Count, groupId = group.Id, refunded = Math.Round(refunded, 3) },
             Message = $"Cancelled {toCancel.Count} upcoming session(s)"
         });
+    }
+
+    /// <summary>
+    /// Fills RefundedAmount from the ledger's negative rows — one query for the whole list, so
+    /// a page of bookings does not cost a query per row.
+    /// </summary>
+    private async Task StampRefundsAsync(List<BookingResponse> dtos)
+    {
+        if (dtos.Count == 0) return;
+        var ids = dtos.Select(d => d.Id).ToList();
+        var refunds = await _db.Payments.AsNoTracking()
+            .Where(p => ids.Contains(p.BookingId) && p.Amount < 0)
+            .GroupBy(p => p.BookingId)
+            .Select(g => new { g.Key, Total = g.Sum(p => p.Amount) })
+            .ToDictionaryAsync(x => x.Key, x => -x.Total);
+        foreach (var d in dtos)
+            if (refunds.TryGetValue(d.Id, out var r)) d.RefundedAmount = Math.Round(r, 3);
     }
 
     private BookingResponse ToDto(Booking b, bool includeFullProof = false)

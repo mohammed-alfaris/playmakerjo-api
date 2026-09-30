@@ -111,6 +111,15 @@ public class User
     /// Refresh compares the token's <c>iat</c> against this and refuses anything older. The
     /// ≤15-minute access-token window stays open, the same way it does for suspension.
     /// </summary>
+    /// <summary>
+    /// Apple's stable id for this person ("sub" in the identity token), once they have signed in
+    /// with Apple. Matching on it rather than on email matters: Apple may hand out a private
+    /// relay address, and a person can change the email Apple shares.
+    /// </summary>
+    [Column("apple_user_id")]
+    [MaxLength(64)]
+    public string? AppleUserId { get; set; }
+
     [Column("password_changed_at")]
     public DateTime? PasswordChangedAt { get; set; }
 

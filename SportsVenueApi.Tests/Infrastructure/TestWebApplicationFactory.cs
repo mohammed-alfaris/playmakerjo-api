@@ -1,6 +1,9 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using SportsVenueApi.Services;
 using MySqlConnector;
 
 namespace SportsVenueApi.Tests.Infrastructure;
@@ -65,5 +68,13 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         // has nothing to do with them. Raised here so rate limiting is tested deliberately
         // (see RateLimiting/) rather than by accident, everywhere, in run order.
         builder.UseSetting("RateLimiting:Auth:PermitLimit", "100000");
+        builder.UseSetting("RateLimiting:Refresh:PermitLimit", "100000");
+        // Sign in with Apple checks tokens against Apple's published keys; tests sign with a
+        // local key instead, so nothing ever calls Apple.
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<IAppleKeySource>();
+            services.AddSingleton<IAppleKeySource>(TestAppleKeys.Source);
+        });
     }
 }

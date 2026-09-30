@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Auth;
@@ -24,13 +25,15 @@ public class UsersController : ControllerBase
     private readonly ILogger<UsersController> _logger;
     private readonly AccessContext _access;
     private readonly AuditLog _audit;
+    private readonly NotificationService _notifications;
     private readonly CompanyService _companies;
 
     public UsersController(
         AppDbContext db, IConfiguration config, ILogger<UsersController> logger,
-        AccessContext access, CompanyService companies, AuditLog audit)
+        AccessContext access, CompanyService companies, AuditLog audit, NotificationService notifications)
     {
         _audit = audit;
+        _notifications = notifications;
         _db = db;
         _logger = logger;
         _access = access;
@@ -191,6 +194,92 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>Update user's preferred language for push notifications.</summary>
+    // DELETE /api/v1/users/me — a player closes their own account.
+    //
+    // Both app stores require an app that lets people sign up to let them delete the account
+    // from inside the app. Only players sign up in the app; owner, staff and admin accounts are
+    // business accounts that PlayMaker opens and closes, so they are pointed there instead.
+    //
+    // Deleting is anonymising, not erasing rows: bookings and payments are the venues' books
+    // and the ledger, and they must still add up. What identifies the person goes — name,
+    // email, phone, photo, sign-in, devices, favourites, inbox — and the email becomes free
+    // to register again. Upcoming bookings are cancelled exactly as if the player had
+    // cancelled each one, venue rule and all, and each venue is told.
+    [HttpDelete("me")]
+    public async Task<IActionResult> DeleteMe(
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] DeleteAccountRequest? req = null)
+    {
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == UserId);
+        if (user == null || user.Status == "deleted")
+            return NotFound(new ApiResponse<object> { Success = false, Message = "User not found" });
+
+        if (user.Role != "player")
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = "Business accounts are closed by PlayMaker. Please contact us to close this account."
+            });
+
+        // Someone holding an unlocked phone should not be able to delete the account on a
+        // whim: an account with a password must give it. Google-only accounts have none.
+        if (!string.IsNullOrEmpty(user.PasswordHash)
+            && (string.IsNullOrEmpty(req?.Password) || !BCrypt.Net.BCrypt.Verify(req.Password, user.PasswordHash)))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "The password is not correct." });
+
+        var today = PlatformConstants.JordanToday();
+        var active = new[] { "pending", "pending_payment", "pending_review", "confirmed" };
+        var upcoming = await _db.Bookings
+            .Include(b => b.Venue).Include(b => b.Player).Include(b => b.Customer)
+            .AsSplitQuery()
+            .Where(b => b.PlayerId == user.Id && !b.IsManual && active.Contains(b.Status) && b.Date >= today)
+            .ToListAsync();
+
+        var now = DateTime.UtcNow;
+        foreach (var b in upcoming)
+        {
+            var refund = CancellationPolicy.RefundFor(b, b.Venue, CancellationPolicy.Policy, now);
+            b.Status = "cancelled";
+            b.PaymentDeadlineAt = null;
+            if (b.PaymentProofStatus == "pending_review") b.PaymentProofStatus = "cancelled";
+            if (refund > 0)
+            {
+                var (row, _) = PaymentLedger.Refund(b, refund, "refund", null, "Refunded by the cancellation policy (account closed)");
+                if (row != null) _db.Payments.Add(row);
+            }
+            await _audit.AddAsync("booking.cancelled", b.Venue.OwnerId, "booking", b.Id,
+                $"Cancelled {AuditLog.Describe(b)}: the player closed their account" + (refund > 0 ? $", refunded {AuditLog.Jod(refund)}" : ""),
+                $"إلغاء {AuditLog.Describe(b)}: أغلق اللاعب حسابه" + (refund > 0 ? $"، إعادة {AuditLog.Jod(refund)}" : ""));
+        }
+
+        var groups = await _db.RecurringBookingGroups.Where(g => g.PlayerId == user.Id && g.Status == "active").ToListAsync();
+        foreach (var g in groups) g.Status = "cancelled";
+
+        _db.Favorites.RemoveRange(_db.Favorites.Where(f => f.UserId == user.Id));
+        _db.Notifications.RemoveRange(_db.Notifications.Where(n => n.UserId == user.Id));
+        _db.DeviceTokens.RemoveRange(_db.DeviceTokens.Where(d => d.UserId == user.Id));
+
+        user.Name = "Deleted user";
+        user.Email = $"deleted-{user.Id}@deleted.playmakerjo.invalid";
+        user.Phone = null;
+        user.Avatar = null;
+        user.PasswordHash = string.Empty;
+        user.Status = "deleted";
+        // Ends every refresh token issued before now, on every device.
+        user.PasswordChangedAt = now;
+
+        await _db.SaveChangesAsync();
+
+        // Each venue hears that the slot is free again (non-blocking; the deletion stands).
+        foreach (var b in upcoming)
+        {
+            try { await _notifications.NotifyBookingCancelled(b, user.Id); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Cancellation notice failed for {BookingId}", b.Id); }
+        }
+
+        _logger.LogInformation("Player {UserId} deleted their account; {Count} upcoming booking(s) cancelled", user.Id, upcoming.Count);
+        return Ok(new ApiResponse<object> { Data = null, Message = "Account deleted" });
+    }
+
     [HttpPatch("me/language")]
     public async Task<IActionResult> UpdateLanguage([FromBody] UpdateLanguageRequest req)
     {
