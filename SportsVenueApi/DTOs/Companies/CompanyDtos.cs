@@ -41,6 +41,9 @@ public class CompanyResponse
 
     [JsonPropertyName("createdAt")]
     public string CreatedAt { get; set; } = "";
+
+    [JsonPropertyName("billing")]
+    public DTOs.Billing.CompanyBilling Billing { get; set; } = new();
 }
 
 public class UpdateCompanyRequest

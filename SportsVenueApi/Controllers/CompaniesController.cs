@@ -1,9 +1,13 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Globalization;
+using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
+using SportsVenueApi.DTOs.Billing;
 using SportsVenueApi.DTOs.Companies;
+using SportsVenueApi.DTOs.Leads;
 using SportsVenueApi.Models;
 using SportsVenueApi.Services;
 
@@ -22,20 +26,26 @@ public class CompaniesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly AccessContext _access;
     private readonly CompanyService _companies;
+    private readonly BillingService _billing;
+    private readonly AuditLog _audit;
 
-    public CompaniesController(AppDbContext db, AccessContext access, CompanyService companies)
+    public CompaniesController(AppDbContext db, AccessContext access, CompanyService companies, BillingService billing, AuditLog audit)
     {
+        _audit = audit;
         _db = db;
         _access = access;
         _companies = companies;
+        _billing = billing;
     }
 
     /// <summary>GET /api/v1/companies/me — the owner's company, with usage against limits.</summary>
     [HttpGet("api/v1/companies/me")]
     public async Task<IActionResult> Mine()
     {
-        if (!_access.IsOwner || _access.CompanyId == null) return Forbid();
-        var company = await _companies.EnsureAsync(_access.CompanyId);
+        // By the owner's own id: a suspended owner has no back office but still needs to see
+        // why, and what is owed.
+        if (!_access.IsOwner) return Forbid();
+        var company = await _companies.EnsureAsync(_access.UserId);
         return Ok(new ApiResponse<CompanyResponse> { Data = await ToDtoAsync(company) });
     }
 
@@ -134,6 +144,117 @@ public class CompaniesController : ControllerBase
         return Ok(new ApiResponse<CompanyResponse> { Data = await ToDtoAsync(company), Message = "Company updated" });
     }
 
+    /// <summary>GET /api/v1/companies/me/onboarding — the owner's set-up checklist.</summary>
+    [HttpGet("api/v1/companies/me/onboarding")]
+    public async Task<IActionResult> MyOnboarding()
+    {
+        if (!_access.IsOwner || _access.CompanyId == null) return Forbid();
+        return Ok(new ApiResponse<OnboardingResponse> { Data = await OnboardingOfAsync(_access.CompanyId) });
+    }
+
+    /// <summary>GET /api/v1/companies/{ownerId}/onboarding — admin checks how a trial is going.</summary>
+    [HttpGet("api/v1/companies/{ownerId}/onboarding")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> Onboarding(string ownerId)
+    {
+        if (!await IsOwnerAsync(ownerId))
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Company not found" });
+        return Ok(new ApiResponse<OnboardingResponse> { Data = await OnboardingOfAsync(ownerId) });
+    }
+
+    private async Task<OnboardingResponse> OnboardingOfAsync(string ownerId)
+    {
+        var steps = await _companies.OnboardingAsync(ownerId);
+        return new OnboardingResponse
+        {
+            Steps = steps.Select(s => new OnboardingStep { Key = s.Key, Done = s.Done }).ToList(),
+            Done = steps.Count(s => s.Done),
+            Total = steps.Count,
+        };
+    }
+
+    /// <summary>
+    /// PATCH /api/v1/companies/{ownerId}/billing — admin sets the cycle, trial end, prices and
+    /// setup-fee waiver. Takes effect from the next invoice drafted; drafts already made keep
+    /// their lines (void and generate again to re-price one).
+    /// </summary>
+    [HttpPatch("api/v1/companies/{ownerId}/billing")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> UpdateBilling(string ownerId, [FromBody] UpdateCompanyBillingRequest req)
+    {
+        if (!await IsOwnerAsync(ownerId))
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Company not found" });
+        var company = await _companies.EnsureAsync(ownerId);
+
+        if (req.Cycle != null)
+        {
+            if (req.Cycle is not (BillingService.Monthly or BillingService.Annual))
+                return BadRequest(new ApiResponse<object> { Success = false, Message = "cycle must be monthly or annual" });
+            company.BillingCycle = req.Cycle;
+        }
+        if (req.TrialEndsOn != null)
+        {
+            if (req.TrialEndsOn.Length == 0) company.TrialEndsOn = null;
+            else if (DateTime.TryParseExact(req.TrialEndsOn, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d))
+                company.TrialEndsOn = d.Date;
+            else
+                return BadRequest(new ApiResponse<object> { Success = false, Message = "Use yyyy-MM-dd for the trial end" });
+        }
+        if (req.Prices != null)
+        {
+            company.PriceFirstVenue = req.Prices.FirstVenue;
+            company.PriceExtraVenue = req.Prices.ExtraVenue;
+        }
+        if (req.SetupFeeWaived is { } waived) company.SetupFeeWaived = waived;
+
+        var (first, extra) = await _billing.PricesForAsync(company);
+        var trial = company.TrialEndsOn?.ToString("yyyy-MM-dd") ?? "none";
+        await _audit.AddAsync("company.billing", ownerId, "company", ownerId,
+            $"Billing set: {company.BillingCycle}, {AuditLog.Jod(first)} + {AuditLog.Jod(extra)} per extra venue, trial ends {trial}{(company.SetupFeeWaived ? ", setup fee waived" : "")}",
+            $"الفوترة: {(company.BillingCycle == BillingService.Annual ? "سنوي" : "شهري")}، {AuditLog.Jod(first)} + {AuditLog.Jod(extra)} لكل ملعب إضافي، نهاية التجربة {trial}{(company.SetupFeeWaived ? "، دون رسوم تأسيس" : "")}");
+
+        company.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+        return Ok(new ApiResponse<CompanyResponse> { Data = await ToDtoAsync(company), Message = "Billing updated" });
+    }
+
+    /// <summary>
+    /// PATCH /api/v1/companies/{ownerId}/suspension — admin stops (or restarts) a company. While
+    /// suspended its owner and staff keep their sign-in but lose the back office, and its
+    /// venues leave the app. Nothing is deleted; lifting it restores everything as it was.
+    /// </summary>
+    [HttpPatch("api/v1/companies/{ownerId}/suspension")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> Suspend(string ownerId, [FromBody] SuspendCompanyRequest req)
+    {
+        if (!await IsOwnerAsync(ownerId))
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Company not found" });
+        var company = await _companies.EnsureAsync(ownerId);
+
+        if (req.Suspended)
+        {
+            company.SuspendedAt ??= DateTime.UtcNow;
+            company.SuspendedReason = string.IsNullOrWhiteSpace(req.Reason) ? null : req.Reason.Trim();
+        }
+        else
+        {
+            company.SuspendedAt = null;
+            company.SuspendedReason = null;
+        }
+        var why = company.SuspendedReason == null ? "" : $": {company.SuspendedReason}";
+        await _audit.AddAsync(req.Suspended ? "company.suspended" : "company.restored", ownerId, "company", ownerId,
+            req.Suspended ? $"PlayMaker suspended the company{why}" : "PlayMaker restored the company",
+            req.Suspended ? $"أوقفت PlayMaker الشركة{why}" : "أعادت PlayMaker تفعيل الشركة");
+
+        company.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+        return Ok(new ApiResponse<CompanyResponse>
+        {
+            Data = await ToDtoAsync(company),
+            Message = req.Suspended ? "Company suspended" : "Company restored",
+        });
+    }
+
     // ------------------------------------------------------------------------------------
 
     private Task<bool> IsOwnerAsync(string id) =>
@@ -172,6 +293,27 @@ public class CompaniesController : ControllerBase
             Venues = new UsageInfo { Used = usage.Venues, Max = usage.MaxVenues },
             Staff = new UsageInfo { Used = usage.Staff, Max = usage.MaxStaff },
             CreatedAt = company.CreatedAt.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            Billing = await BillingOfAsync(company),
+        };
+    }
+
+    private async Task<CompanyBilling> BillingOfAsync(Company company)
+    {
+        var (first, extra) = await _billing.PricesForAsync(company);
+        var (count, amount) = await _billing.OverdueAsync(company.OwnerId);
+        return new CompanyBilling
+        {
+            Status = BillingService.StatusOf(company, PlatformConstants.JordanToday()),
+            Cycle = company.BillingCycle,
+            TrialEndsOn = company.TrialEndsOn?.ToString("yyyy-MM-dd"),
+            PriceFirstVenue = first,
+            PriceExtraVenue = extra,
+            CustomPrices = company.PriceFirstVenue != null || company.PriceExtraVenue != null,
+            SetupFeeWaived = company.SetupFeeWaived,
+            OverdueCount = count,
+            OverdueAmount = amount,
+            SuspendedAt = company.SuspendedAt,
+            SuspendedReason = company.SuspendedReason,
         };
     }
 }

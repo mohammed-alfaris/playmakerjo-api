@@ -23,12 +23,14 @@ public class UsersController : ControllerBase
     private readonly string _uploadsBaseUrl;
     private readonly ILogger<UsersController> _logger;
     private readonly AccessContext _access;
+    private readonly AuditLog _audit;
     private readonly CompanyService _companies;
 
     public UsersController(
         AppDbContext db, IConfiguration config, ILogger<UsersController> logger,
-        AccessContext access, CompanyService companies)
+        AccessContext access, CompanyService companies, AuditLog audit)
     {
+        _audit = audit;
         _db = db;
         _logger = logger;
         _access = access;
@@ -119,7 +121,7 @@ public class UsersController : ControllerBase
         // Staff always get an answer, empty when they have no company (suspended, unlinked, or
         // their employer is banned) — omitting it would read to the dashboard as "not loaded
         // yet" and it would fall back to their old read/write level.
-        if (_access.CompanyId != null || _access.IsAdmin || _access.IsStaff)
+        if (_access.CompanyId != null || _access.IsAdmin || _access.IsStaff || _access.CompanySuspended)
         {
             var company = _access.CompanyId == null ? null : await _companies.EnsureAsync(_access.CompanyId);
             dto.Access = new AccessSummary
@@ -132,6 +134,7 @@ public class UsersController : ControllerBase
                 Permissions = _access.Permissions.ToList(),
                 AllVenues = (_access.IsAdmin || _access.CompanyId != null) && _access.RestrictedVenueIds == null,
                 VenueIds = _access.RestrictedVenueIds?.ToList() ?? [],
+                CompanySuspended = _access.CompanySuspended,
             };
         }
 
@@ -359,6 +362,8 @@ public class UsersController : ControllerBase
         if (error != null)
             return BadRequest(new ApiResponse<object> { Success = false, Message = error });
 
+        await _audit.AddAsync("staff.updated", user.ManagedByOwnerId, "user", user.Id,
+            $"Changed {user.Name}'s role or venues", $"تعديل دور أو ملاعب {user.Name}");
         await _db.SaveChangesAsync();
         return Ok(new ApiResponse<UserResponse> { Data = ToDto(user), Message = "Staff updated" });
     }
@@ -454,6 +459,12 @@ public class UsersController : ControllerBase
         }
 
         _db.Users.Add(user);
+        if (user.Role == "venue_staff")
+            await _audit.AddAsync("staff.added", user.ManagedByOwnerId, "user", user.Id,
+                $"Added {user.Name} to the team", $"إضافة {user.Name} إلى الفريق");
+        else if (user.Role == "venue_owner")
+            await _audit.AddAsync("owner.created", user.Id, "user", user.Id,
+                $"Created the owner account {user.Name} ({user.Email})", $"إنشاء حساب المالك {user.Name} ({user.Email})");
         await _db.SaveChangesAsync();
         if (tx != null) await tx.CommitAsync();
 
@@ -501,6 +512,11 @@ public class UsersController : ControllerBase
         }
 
         user.Status = req.Status;
+        var company = user.Role == "venue_staff" ? user.ManagedByOwnerId : user.Role == "venue_owner" ? user.Id : null;
+        if (company != null)
+            await _audit.AddAsync(req.Status == "banned" ? "user.suspended" : "user.restored", company, "user", user.Id,
+                $"{(req.Status == "banned" ? "Suspended" : "Restored")} {user.Name}'s account",
+                $"{(req.Status == "banned" ? "إيقاف" : "إعادة تفعيل")} حساب {user.Name}");
         await _db.SaveChangesAsync();
         if (tx != null) await tx.CommitAsync();
 

@@ -27,6 +27,9 @@ public class SettingsResponse
     [JsonPropertyName("defaultMaxStaff")]
     public int? DefaultMaxStaff { get; set; }
 
+    [JsonPropertyName("billing")]
+    public BillingDefaults Billing { get; set; } = new();
+
     [JsonPropertyName("updatedAt")]
     public string UpdatedAt { get; set; } = "";
 }
@@ -34,8 +37,22 @@ public class SettingsResponse
 /// <summary>
 /// Admin update request — all fields optional (PATCH semantics).
 /// </summary>
+/// <summary>What a company without its own prices pays, and the terms every company gets.</summary>
+public class BillingDefaults
+{
+    [JsonPropertyName("priceFirstVenue")] public double PriceFirstVenue { get; set; }
+    [JsonPropertyName("priceExtraVenue")] public double PriceExtraVenue { get; set; }
+    [JsonPropertyName("setupFee")] public double SetupFee { get; set; }
+    [JsonPropertyName("trialDays")] public int TrialDays { get; set; }
+    [JsonPropertyName("paymentTermsDays")] public int PaymentTermsDays { get; set; }
+}
+
 public class UpdateSettingsRequest
 {
+    /// <summary>When present, every billing default is set from it.</summary>
+    [JsonPropertyName("billing")]
+    public BillingDefaults? Billing { get; set; }
+
     /// <summary>
     /// When present, BOTH defaults are set from it (null = unlimited). Applies to companies
     /// created from now on; existing companies keep their own limits.

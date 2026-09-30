@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SportsVenueApi.Data;
 
@@ -11,9 +12,11 @@ using SportsVenueApi.Data;
 namespace SportsVenueApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260930091355_AddBilling")]
+    partial class AddBilling
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,70 +24,6 @@ namespace SportsVenueApi.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 64);
 
             MySqlModelBuilderExtensions.AutoIncrementColumns(modelBuilder);
-
-            modelBuilder.Entity("SportsVenueApi.Models.AuditEvent", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<string>("Action")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
-                        .HasColumnName("action");
-
-                    b.Property<string>("ActorName")
-                        .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
-                        .HasColumnName("actor_name");
-
-                    b.Property<string>("ActorRole")
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
-                        .HasColumnName("actor_role");
-
-                    b.Property<string>("ActorUserId")
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("actor_user_id");
-
-                    b.Property<DateTime>("At")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("at");
-
-                    b.Property<string>("EntityId")
-                        .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
-                        .HasColumnName("entity_id");
-
-                    b.Property<string>("EntityType")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
-                        .HasColumnName("entity_type");
-
-                    b.Property<string>("OwnerId")
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("owner_id");
-
-                    b.Property<string>("Summary")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("summary");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("At");
-
-                    b.HasIndex("OwnerId", "At");
-
-                    b.ToTable("audit_events");
-                });
 
             modelBuilder.Entity("SportsVenueApi.Models.Booking", b =>
                 {
@@ -1462,11 +1401,6 @@ namespace SportsVenueApi.Migrations
                         .HasColumnType("varchar(255)")
                         .HasColumnName("contact_name");
 
-                    b.Property<string>("ConvertedOwnerId")
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("converted_owner_id");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)")
                         .HasColumnName("created_at");
@@ -1476,19 +1410,6 @@ namespace SportsVenueApi.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("varchar(255)")
                         .HasColumnName("email");
-
-                    b.Property<string>("LostReason")
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)")
-                        .HasColumnName("lost_reason");
-
-                    b.Property<DateTime?>("NextFollowUpOn")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("next_follow_up_on");
-
-                    b.Property<string>("Notes")
-                        .HasColumnType("text")
-                        .HasColumnName("notes");
 
                     b.Property<string>("Phone")
                         .IsRequired()
@@ -1500,16 +1421,6 @@ namespace SportsVenueApi.Migrations
                         .IsRequired()
                         .HasColumnType("longtext")
                         .HasColumnName("sports");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(12)
-                        .HasColumnType("varchar(12)")
-                        .HasColumnName("status");
-
-                    b.Property<DateTime?>("UpdatedAt")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("updated_at");
 
                     b.Property<string>("VenueName")
                         .IsRequired()

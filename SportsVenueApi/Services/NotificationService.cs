@@ -180,6 +180,22 @@ public class NotificationService
         );
     }
 
+    /// <summary>PlayMaker issued the company an invoice. The owner only — billing is theirs.</summary>
+    public async Task NotifyInvoiceIssued(Invoice invoice)
+    {
+        var total = invoice.Total.ToString("0.###");
+        await CreateNotification(
+            invoice.OwnerId,
+            Bi("New invoice", "فاتورة جديدة"),
+            Bi(
+                $"Invoice {invoice.Number} for {invoice.Period}: {total} JOD, due {invoice.DueOn:yyyy-MM-dd}.",
+                $"الفاتورة {invoice.Number} عن {invoice.Period}: {total} د.أ، تستحق بتاريخ {invoice.DueOn:yyyy-MM-dd}."
+            ),
+            "invoice_issued",
+            invoice.Id
+        );
+    }
+
     /// <summary>A weekly series booked through the app: one notice for the whole series, not one per week.</summary>
     public async Task NotifyNewSeries(Booking first, int sessions)
     {
