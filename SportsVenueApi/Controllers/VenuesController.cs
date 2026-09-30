@@ -94,6 +94,7 @@ public class VenuesController : ControllerBase
         MinBookingDuration = v.MinBookingDuration,
         MaxBookingDuration = v.MaxBookingDuration,
         DepositPercentage = v.DepositPercentage,
+        FreeCancelHours = v.FreeCancelHours,
         ParentSize = v.ParentSize,
         SubSizes = v.SubSizes,
         SizePrices = v.SizePrices,
@@ -583,6 +584,8 @@ public class VenuesController : ControllerBase
             venue.MaxBookingDuration = req.MaxBookingDuration.Value;
         if (req.DepositPercentage.HasValue)
             venue.DepositPercentage = req.DepositPercentage.Value;
+        if (req.FreeCancelHours.HasValue)
+            venue.FreeCancelHours = req.FreeCancelHours.Value;
         if (req.SportsConfig != null)
             venue.SportsConfig = req.SportsConfig;
         if (req.Pitches != null)
@@ -674,6 +677,7 @@ public class VenuesController : ControllerBase
         if (req.MinBookingDuration.HasValue) venue.MinBookingDuration = req.MinBookingDuration.Value;
         if (req.MaxBookingDuration.HasValue) venue.MaxBookingDuration = req.MaxBookingDuration.Value;
         if (req.DepositPercentage.HasValue) venue.DepositPercentage = req.DepositPercentage.Value;
+        if (req.FreeCancelHours.HasValue) venue.FreeCancelHours = req.FreeCancelHours.Value;
 
         // Either list may be sent alone. The other keeps its stored value, and a typed label
         // that matches the catalog still lands in FeatureIds — so both are always rewritten.

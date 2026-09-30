@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 
 namespace SportsVenueApi.DTOs.Bookings;
@@ -169,6 +170,28 @@ public class UploadProofRequest
 {
     [JsonPropertyName("paymentProof")]
     public string PaymentProof { get; set; } = "";  // base64 image
+}
+
+/// <summary>What to do with money already paid when cancelling. Absent body = the venue's rule.</summary>
+public class CancelBookingRequest
+{
+    /// <summary>"policy" (the venue's free-cancellation window), "all" or "none".</summary>
+    [JsonPropertyName("refund")]
+    public string? Refund { get; set; }
+}
+
+public class RefundRequest
+{
+    [JsonPropertyName("amount")]
+    public double Amount { get; set; }
+
+    /// <summary>"refund" (money returned) or "correction" (recorded by mistake).</summary>
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "refund";
+
+    [JsonPropertyName("note")]
+    [StringLength(255)]
+    public string? Note { get; set; }
 }
 
 public class ReviewProofRequest

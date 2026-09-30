@@ -584,8 +584,13 @@ public class BookingsController : ControllerBase
 
     // PATCH /api/v1/bookings/{id}/cancel — cancel a booking
     [HttpPatch("{id}/cancel")]
-    public async Task<IActionResult> Cancel(string id)
+    public async Task<IActionResult> Cancel(
+        string id,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] CancelBookingRequest? req = null)
     {
+        if (!CancellationPolicy.IsValidChoice(req?.Refund))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "refund must be policy, all or none" });
+
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
@@ -618,6 +623,20 @@ public class BookingsController : ControllerBase
         if (booking.Status == "no_show")
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot cancel a no-show booking" });
 
+        // Money already paid. A player cancelling their own booking always gets the venue's
+        // rule; the venue side may override it ("refund all" / "keep"), but only someone who
+        // may record payments can make the ledger move — anyone else cancels and the money
+        // stays where it is for the owner to decide.
+        var choice = isOwnPlayerBooking ? CancellationPolicy.Policy : req?.Refund ?? CancellationPolicy.Policy;
+        var refund = CancellationPolicy.RefundFor(booking, booking.Venue, choice, DateTime.UtcNow);
+        var mayRecord = isOwnPlayerBooking || CanOnBooking(StaffPermissions.PaymentsRecord, booking);
+        if (refund > 0 && !mayRecord)
+        {
+            if (choice == CancellationPolicy.All)
+                return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Refunds need the permission to record payments." });
+            refund = 0;
+        }
+
         booking.Status = "cancelled";
         // Disarm. A human cancelled this one — leaving a live deadline on a terminal row
         // would let the sweep stamp AutoCancelledAt on it later and rewrite whose decision
@@ -627,6 +646,16 @@ public class BookingsController : ControllerBase
         // booking in the owner's queue to approve — and approving it revived the booking.
         if (booking.PaymentProofStatus == "pending_review")
             booking.PaymentProofStatus = "cancelled";
+
+        if (refund > 0)
+        {
+            var (row, _) = PaymentLedger.Refund(
+                booking, refund, "refund",
+                // A player's cancellation is the rule's decision, not theirs to record.
+                isOwnPlayerBooking ? null : UserId,
+                choice == CancellationPolicy.All ? "Refunded on cancellation" : "Refunded by the cancellation policy");
+            if (row != null) _db.Payments.Add(row);
+        }
         await _db.SaveChangesAsync();
 
         // Notify player + owner about cancellation (non-blocking)
@@ -636,7 +665,44 @@ public class BookingsController : ControllerBase
         return Ok(new ApiResponse<BookingResponse>
         {
             Data = ToDto(booking),
-            Message = "Booking cancelled successfully"
+            Message = refund > 0
+                ? $"Booking cancelled; {refund:0.###} JOD refunded"
+                : "Booking cancelled successfully"
+        });
+    }
+
+    /// <summary>
+    /// Record money returned to the customer, or correct an amount recorded by mistake. The
+    /// ledger gets a negative row; nothing already recorded is edited.
+    /// </summary>
+    [HttpPost("{id}/refund")]
+    public async Task<IActionResult> Refund(string id, [FromBody] RefundRequest req)
+    {
+        if (req.Kind is not ("refund" or "correction"))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "kind must be refund or correction" });
+
+        var booking = await _db.Bookings
+            .Include(b => b.Venue)
+            .Include(b => b.Player)
+            .Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.Id == id);
+        if (booking == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
+        if (!CanOnBooking(StaffPermissions.PaymentsRecord, booking))
+            return Forbid();
+
+        var (row, error) = PaymentLedger.Refund(booking, req.Amount, req.Kind, UserId, req.Note);
+        if (row == null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = error! });
+
+        _db.Payments.Add(row);
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<BookingResponse>
+        {
+            Data = ToDto(booking),
+            Message = req.Kind == "refund" ? "Refund recorded" : "Correction recorded"
         });
     }
 
@@ -1485,13 +1551,12 @@ public class BookingsController : ControllerBase
         if (group == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Series not found" });
 
-        // Allow-list: the series owner's player account, the venue side, or an admin.
-        var canCancelSeries =
-            UserRole == "super_admin"
-            || (UserRole == "venue_owner" && group.Venue.OwnerId == UserId)
-            || (UserRole == "player" && group.PlayerId == UserId);
-        if (!canCancelSeries)
+        // The series' own player, or the venue side with booking rights — staff included, the
+        // same rule as cancelling one booking (this used to be admin and owner only).
+        var isOwnSeries = UserRole == "player" && group.PlayerId == UserId;
+        if (!isOwnSeries && !_access.Can(StaffPermissions.BookingsManage, group.Venue))
             return Forbid();
+        var mayRecord = isOwnSeries || _access.Can(StaffPermissions.PaymentsRecord, group.Venue);
 
         var today = PlatformConstants.JordanToday();
         var active = new[] { "pending", "pending_payment", "pending_review", "confirmed" };
@@ -1502,13 +1567,29 @@ public class BookingsController : ControllerBase
                 && active.Contains(b.Status))
             .ToListAsync();
 
-        foreach (var b in toCancel) b.Status = "cancelled";
+        // Each week follows the venue's rule on its own: next week's session may be refundable
+        // while tonight's is not.
+        var now = DateTime.UtcNow;
+        double refunded = 0;
+        foreach (var b in toCancel)
+        {
+            var refund = mayRecord ? CancellationPolicy.RefundFor(b, group.Venue, CancellationPolicy.Policy, now) : 0;
+            b.Status = "cancelled";
+            b.PaymentDeadlineAt = null;
+            if (b.PaymentProofStatus == "pending_review") b.PaymentProofStatus = "cancelled";
+            if (refund > 0)
+            {
+                var (row, _) = PaymentLedger.Refund(b, refund, "refund", isOwnSeries ? null : UserId,
+                    "Refunded by the cancellation policy (series cancelled)");
+                if (row != null) { _db.Payments.Add(row); refunded += refund; }
+            }
+        }
         group.Status = "cancelled";
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<object>
         {
-            Data = new { cancelledCount = toCancel.Count, groupId = group.Id },
+            Data = new { cancelledCount = toCancel.Count, groupId = group.Id, refunded = Math.Round(refunded, 3) },
             Message = $"Cancelled {toCancel.Count} upcoming session(s)"
         });
     }

@@ -81,6 +81,13 @@ public class Venue
     [Column("deposit_percentage")]
     public double DepositPercentage { get; set; } = 20.0;
 
+    /// <summary>
+    /// Cancelling at least this many hours before the start refunds what was paid; later than
+    /// that, it is kept. 0 = always free to cancel.
+    /// </summary>
+    [Column("free_cancel_hours")]
+    public int FreeCancelHours { get; set; } = 24;
+
     [Column("parent_size")]
     [MaxLength(8)]
     public string? ParentSize { get; set; }
