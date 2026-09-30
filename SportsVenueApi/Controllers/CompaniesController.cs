@@ -7,6 +7,7 @@ using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Billing;
 using SportsVenueApi.DTOs.Companies;
+using SportsVenueApi.DTOs.Leads;
 using SportsVenueApi.Models;
 using SportsVenueApi.Services;
 
@@ -139,6 +140,35 @@ public class CompaniesController : ControllerBase
         company.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
         return Ok(new ApiResponse<CompanyResponse> { Data = await ToDtoAsync(company), Message = "Company updated" });
+    }
+
+    /// <summary>GET /api/v1/companies/me/onboarding — the owner's set-up checklist.</summary>
+    [HttpGet("api/v1/companies/me/onboarding")]
+    public async Task<IActionResult> MyOnboarding()
+    {
+        if (!_access.IsOwner || _access.CompanyId == null) return Forbid();
+        return Ok(new ApiResponse<OnboardingResponse> { Data = await OnboardingOfAsync(_access.CompanyId) });
+    }
+
+    /// <summary>GET /api/v1/companies/{ownerId}/onboarding — admin checks how a trial is going.</summary>
+    [HttpGet("api/v1/companies/{ownerId}/onboarding")]
+    [Authorize(Roles = "super_admin")]
+    public async Task<IActionResult> Onboarding(string ownerId)
+    {
+        if (!await IsOwnerAsync(ownerId))
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Company not found" });
+        return Ok(new ApiResponse<OnboardingResponse> { Data = await OnboardingOfAsync(ownerId) });
+    }
+
+    private async Task<OnboardingResponse> OnboardingOfAsync(string ownerId)
+    {
+        var steps = await _companies.OnboardingAsync(ownerId);
+        return new OnboardingResponse
+        {
+            Steps = steps.Select(s => new OnboardingStep { Key = s.Key, Done = s.Done }).ToList(),
+            Done = steps.Count(s => s.Done),
+            Total = steps.Count,
+        };
     }
 
     /// <summary>

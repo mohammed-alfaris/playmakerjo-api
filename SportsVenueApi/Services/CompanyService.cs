@@ -68,6 +68,30 @@ public sealed class CompanyService
     }
 
     /// <summary>
+    /// How far a company has got setting itself up, worked out from what exists — nothing to
+    /// tick by hand, so it can never disagree with the system. In the order an owner does it.
+    /// </summary>
+    public async Task<List<(string Key, bool Done)>> OnboardingAsync(string ownerId, CancellationToken ct = default)
+    {
+        var venues = await _db.Venues.AsNoTracking().Where(v => v.OwnerId == ownerId).ToListAsync(ct);
+        var pitches = venues.SelectMany(v => PitchSizes.ResolvedPitches(v).Select(p => (Venue: v, Pitch: p))).ToList();
+
+        return
+        [
+            ("venue", venues.Count > 0),
+            // Every pitch can be priced: its own rate, a size price, or the venue's rate.
+            ("pitches", pitches.Count > 0 && pitches.All(x =>
+                x.Pitch.PricePerHour > 0 || x.Pitch.SizePrices.Values.Any(p => p > 0) || x.Venue.PricePerHour > 0)),
+            ("hours", venues.Any(v => (v.OperatingHours?.Count ?? 0) > 0)),
+            ("cliq", venues.Any(v => !string.IsNullOrWhiteSpace(v.CliqAlias))),
+            ("staff", await _db.Users.AnyAsync(u => u.ManagedByOwnerId == ownerId && u.Role == "venue_staff", ct)),
+            ("first_booking", await _db.Bookings.AnyAsync(b => b.Venue.OwnerId == ownerId, ct)),
+            ("customer", await _db.Customers.AnyAsync(c => c.OwnerId == ownerId && c.Phone != "", ct)),
+            ("standing", await _db.PermanentBookings.AnyAsync(p => p.Venue.OwnerId == ownerId, ct)),
+        ];
+    }
+
+    /// <summary>
     /// A company with no roles at all gets the two that match the old read/write levels, so an
     /// owner opening the Team page for the first time has something to assign. A company that
     /// has deliberately deleted them keeps whatever roles it has — this only fills an empty set.
