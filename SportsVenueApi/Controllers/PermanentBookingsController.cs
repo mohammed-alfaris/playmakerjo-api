@@ -225,6 +225,11 @@ public class PermanentBookingsController : ControllerBase
         if (pitch == null)
             return BadRequest(new ApiResponse<object> { Success = false, Message = "The pitch for this standing booking no longer exists" });
 
+        // A blocked week is not played, so there is nothing to record or collect for it.
+        if (TimeSpan.TryParse(perm.StartTime, out var permStart)
+            && await VenueBlocks.OverlapAsync(_db, perm.VenueId, pitch.Id, date, permStart, perm.Duration) is { } block)
+            return Conflict(new ApiResponse<object> { Success = false, Message = VenueBlocks.Describe(block, pitch.Name) });
+
         // Same resolution order as a counter booking: per-size price, then the pitch's own
         // rate, then the venue default.
         double hourly;

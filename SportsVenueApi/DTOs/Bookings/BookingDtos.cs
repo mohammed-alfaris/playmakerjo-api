@@ -473,4 +473,11 @@ public class BookedSlotInfo
 
     [JsonPropertyName("unitWeight")]
     public int UnitWeight { get; set; } = 1;
+
+    /// <summary>
+    /// Blocked time rather than a booking. It carries the pitch's full capacity as its weight,
+    /// so a client that only sums weights already treats it as taken.
+    /// </summary>
+    [JsonPropertyName("blocked")]
+    public bool Blocked { get; set; }
 }

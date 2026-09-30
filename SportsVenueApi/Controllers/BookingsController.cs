@@ -1358,6 +1358,9 @@ public class BookingsController : ControllerBase
         }).ToList();
         var permUnits = permOverlaps.Sum(p => PitchSizes.WeightOf(p.PitchSize ?? pitch.ParentSize));
 
+        // A blocked week is a conflict like any other: skipped or fatal per the policy.
+        var blocks = await VenueBlocks.LoadAsync(_db, [req.VenueId], startDate.Date, endDate.Date.AddDays(2));
+
         var conflictDates = new List<DateTime>();
         var validDates = new List<DateTime>();
         foreach (var date in occurrences)
@@ -1383,6 +1386,9 @@ public class BookingsController : ControllerBase
             {
                 conflict = overlaps.Count > 0 || permOverlaps.Count > 0;
             }
+
+            if (VenueBlocks.FirstOverlap(blocks, pitch.Id, date, startTimeSpan, req.Duration) != null)
+                conflict = true;
 
             if (conflict) conflictDates.Add(date);
             else validDates.Add(date);
@@ -1777,6 +1783,11 @@ public class BookingsController : ControllerBase
     {
         var pitch = plan.Pitch;
         var startTimeSpan = plan.Start;
+
+        // Blocked time first: no size or spare capacity makes a closed pitch bookable.
+        var block = await VenueBlocks.OverlapAsync(_db, venue.Id, pitch.Id, plan.Date, plan.Start, plan.Duration);
+        if (block != null)
+            return VenueBlocks.Describe(block, pitch.Name);
 
         // Overlap detection is scoped per-pitch. A booking on Pitch 1 never blocks
         // Pitch 2. Inside the pitch, subdividable pitches use the capacity-unit pool

@@ -21,6 +21,7 @@ public class AppDbContext : DbContext
     public DbSet<PlatformSettings> PlatformSettings => Set<PlatformSettings>();
     public DbSet<PlayerWaitlist> PlayerWaitlist => Set<PlayerWaitlist>();
     public DbSet<VenueWaitlist> VenueWaitlist => Set<VenueWaitlist>();
+    public DbSet<VenueBlock> VenueBlocks => Set<VenueBlock>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<VenueFeature> VenueFeatures => Set<VenueFeature>();
     public DbSet<Company> Companies => Set<Company>();
@@ -104,6 +105,14 @@ public class AppDbContext : DbContext
         {
             e.HasOne(g => g.Player).WithMany().HasForeignKey(g => g.PlayerId);
             e.HasOne(g => g.Venue).WithMany().HasForeignKey(g => g.VenueId);
+        });
+
+        modelBuilder.Entity<VenueBlock>(e =>
+        {
+            // Cascade like every other venue child: a block means nothing without its venue.
+            e.HasOne(b => b.Venue).WithMany().HasForeignKey(b => b.VenueId).OnDelete(DeleteBehavior.Cascade);
+            // Every slot decision asks "which blocks touch this venue around this time?".
+            e.HasIndex(b => new { b.VenueId, b.StartsAt });
         });
 
         modelBuilder.Entity<PermanentBooking>(e =>
