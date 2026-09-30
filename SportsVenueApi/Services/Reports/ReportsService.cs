@@ -350,6 +350,24 @@ public class ReportsService
         return added;
     }
 
+    /// <summary>[open, close) with the blocked spans taken out, as the pieces that remain.</summary>
+    private static List<(double From, double To)> Subtract(double open, double close, List<(double From, double To)> cuts)
+    {
+        var spans = new List<(double From, double To)> { (open, close) };
+        foreach (var (cutFrom, cutTo) in cuts)
+        {
+            var next = new List<(double From, double To)>();
+            foreach (var (a, z) in spans)
+            {
+                if (cutTo <= a || cutFrom >= z) { next.Add((a, z)); continue; }
+                if (cutFrom > a) next.Add((a, cutFrom));
+                if (cutTo < z) next.Add((cutTo, z));
+            }
+            spans = next;
+        }
+        return spans;
+    }
+
     private static bool TryMinutes(string? hhmm, out double minutes)
     {
         minutes = 0;
@@ -377,6 +395,7 @@ public class ReportsService
         var standing = await _db.PermanentBookings.AsNoTracking()
             .Where(p => venueIds.Contains(p.VenueId))
             .ToListAsync();
+        var blocks = (await VenueBlocks.LoadAsync(_db, venueIds, from, toExclusive.AddDays(1))).ToLookup(b => b.VenueId);
 
         var bookingsByVenueDay = bookings.ToLookup(b => (b.VenueId, b.Date.Date));
         var standingByVenue = standing.ToLookup(p => p.VenueId);
@@ -403,7 +422,18 @@ public class ReportsService
                     if (!TryMinutes(hours.Window.Open, out var open) || !TryMinutes(hours.Window.Close, out var close)) continue;
                     if (close <= open) close += 24 * 60; // 18:00–02:00 runs into the next day
 
-                    var openMin = Spread(acc.Open, dow, open, close, 1);
+                    // Blocked time was never for sale, so it is not "open": a pitch closed for
+                    // maintenance all Friday must not read as a Friday nobody wanted.
+                    var cuts = blocks[v.Id]
+                        .Where(b => VenueBlocks.Covers(b, pitch.Id))
+                        .Select(b => VenueBlocks.MinutesOn(b, date))
+                        .OfType<(double From, double To)>()
+                        .ToList();
+                    var openSpans = Subtract(open, close, cuts);
+                    if (openSpans.Count == 0) continue;
+
+                    double openMin = 0;
+                    foreach (var (a, z) in openSpans) openMin += Spread(acc.Open, dow, a, z, 1);
 
                     var capacity = PitchSizes.CapacityOf(pitch);
                     var subdividable = pitch.ParentSize != null && (pitch.SubSizes?.Count ?? 0) > 0;
@@ -427,7 +457,7 @@ public class ReportsService
                     }
 
                     var pitchOpen = new double[7, 24];
-                    Spread(pitchOpen, dow, open, close, 1);
+                    foreach (var (a, z) in openSpans) Spread(pitchOpen, dow, a, z, 1);
                     double bookedMin = 0;
                     for (var d = 0; d < 7; d++)
                     for (var h = 0; h < 24; h++)

@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 using SportsVenueApi.DTOs.VenueFeatures;
 
@@ -140,6 +141,9 @@ public class VenueResponse
     [JsonPropertyName("depositPercentage")]
     public double DepositPercentage { get; set; } = 20.0;
 
+    [JsonPropertyName("freeCancelHours")]
+    public int FreeCancelHours { get; set; } = 24;
+
     [JsonPropertyName("parentSize")]
     public string? ParentSize { get; set; }
 
@@ -235,6 +239,10 @@ public class VenueCreateRequest
     [JsonPropertyName("depositPercentage")]
     public double? DepositPercentage { get; set; }
 
+    [JsonPropertyName("freeCancelHours")]
+    [Range(0, 720)]
+    public int? FreeCancelHours { get; set; }
+
     [JsonPropertyName("parentSize")]
     public string? ParentSize { get; set; }
 
@@ -320,6 +328,10 @@ public class VenueUpdateRequest
 
     [JsonPropertyName("depositPercentage")]
     public double? DepositPercentage { get; set; }
+
+    [JsonPropertyName("freeCancelHours")]
+    [Range(0, 720)]
+    public int? FreeCancelHours { get; set; }
 
     [JsonPropertyName("parentSize")]
     public string? ParentSize { get; set; }

@@ -247,82 +247,12 @@ public class BookingsController : ControllerBase
         if (!venue.Sports.Contains(req.Sport, StringComparer.OrdinalIgnoreCase))
             return BadRequest(new ApiResponse<object> { Success = false, Message = $"Venue does not offer {req.Sport}" });
 
-        // Validate date is not in the past
-        if (!DateTime.TryParse(req.Date, out var bookingDate))
-            return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid date format. Use YYYY-MM-DD" });
-
-        if (bookingDate.Date < PlatformConstants.JordanToday())
-            return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot book in the past" });
-
-        // Validate start time format
-        if (string.IsNullOrEmpty(req.StartTime) || !TimeSpan.TryParse(req.StartTime, out var startTimeSpan))
-            return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid start time format. Use HH:mm" });
-
-        // Validate duration
-        if (req.Duration < venue.MinBookingDuration || req.Duration > venue.MaxBookingDuration)
-            return BadRequest(new ApiResponse<object>
-            {
-                Success = false,
-                Message = $"Duration must be between {venue.MinBookingDuration} and {venue.MaxBookingDuration} minutes"
-            });
-
-        // Resolve which pitch this booking lives on.
-        var pitchResolution = ResolvePitchForBooking(venue, req.PitchId, req.Sport);
-        if (pitchResolution.Error != null)
-            return pitchResolution.Status == 404
-                ? NotFound(new ApiResponse<object> { Success = false, Message = pitchResolution.Error })
-                : BadRequest(new ApiResponse<object> { Success = false, Message = pitchResolution.Error });
-        var pitch = pitchResolution.Pitch!;
-
-        // Operating-hours check. Deliberately after pitch resolution so a pitch with its
-        // own hours is honoured exactly as the availability view does.
-        //
-        // This used to build its own key as DayOfWeek.ToString().ToLower()[..3] ("mon")
-        // and look up ONLY that. The dashboard writes full day names ("monday"), so the
-        // lookup missed, the whole block was skipped, and operating hours were never
-        // enforced on booking creation for any venue — a player could book 03:00 on a
-        // closed day. It also never read the "closed" flag. AvailabilityHelper accepts
-        // both key styles and honours "closed", and is the same code the availability
-        // view uses, so the two can no longer disagree.
-        var dayName = bookingDate.DayOfWeek.ToString().ToLower();
-
-        var hoursCheck = AvailabilityHelper.CheckSlotAgainstHours(
-            venue, pitch, dayName, startTimeSpan, req.Duration);
-        switch (hoursCheck.Verdict)
-        {
-            case SlotHoursVerdict.Misconfigured:
-                return BadRequest(new ApiResponse<object>
-                {
-                    Success = false,
-                    Message = "This venue's operating hours are misconfigured. Please contact the venue."
-                });
-            case SlotHoursVerdict.OutsideHours:
-                return BadRequest(new ApiResponse<object>
-                {
-                    Success = false,
-                    Message = $"Booking must be within operating hours ({hoursCheck.Open} - {hoursCheck.Close})"
-                });
-            case SlotHoursVerdict.Closed:
-                return BadRequest(new ApiResponse<object>
-                {
-                    Success = false,
-                    Message = "The venue is closed on this day."
-                });
-        }
-
-        // Pitch-size validation. Subdivision is football-only and carried on the pitch.
-        string? pitchSize = null;
-        if (pitch.ParentSize != null)
-        {
-            pitchSize = req.PitchSize ?? pitch.ParentSize;
-            var offered = PitchSizes.OfferedSizes(pitch);
-            if (!offered.Contains(pitchSize))
-                return BadRequest(new ApiResponse<object>
-                {
-                    Success = false,
-                    Message = $"Pitch '{pitch.Name}' does not offer {pitchSize}-aside. Offered: {string.Join(", ", offered)}"
-                });
-        }
+        // Date, time, duration, pitch, operating hours and size: the same checks a move runs.
+        var invalid = PlanSlot(venue, req.Sport, req.Date, req.StartTime, req.Duration, req.PitchId, req.PitchSize, out var plan);
+        if (invalid != null) return invalid;
+        var bookingDate = plan!.Date;
+        var pitch = plan.Pitch;
+        var pitchSize = plan.PitchSize;
 
         // ── Everything from here to the commit is one serialized critical section ──
         //
@@ -349,103 +279,11 @@ public class BookingsController : ControllerBase
         // the five fail without it, including five simultaneous requests all being accepted
         // for the same slot. A test that passes with and without the fix proves nothing, so
         // that check is worth repeating if this code is ever refactored.
-        _ = await _db.Venues
-            .FromSql($"SELECT * FROM venues WHERE id = {req.VenueId} FOR UPDATE")
-            .AsNoTracking()
-            .ToListAsync();
+        await LockVenueAsync(req.VenueId);
 
-        // Overlap detection is scoped per-pitch. A booking on Pitch 1 never blocks
-        // Pitch 2. Inside the pitch, subdividable pitches use the capacity-unit pool
-        // (e.g. 11-aside = 4 units, 8 = 2, 6 = 1), non-subdividable pitches use the
-        // naive any-overlap rule.
-        var endTime = startTimeSpan + TimeSpan.FromMinutes(req.Duration);
-        var sameDayBookings = await _db.Bookings
-            .Where(b => b.VenueId == req.VenueId
-                && b.Date.Date == bookingDate.Date
-                && b.Status != "cancelled"
-                && b.StartTime != null)
-            .ToListAsync();
-        var pitchBookings = sameDayBookings
-            .Where(b => BookingOnPitch(b, venue, pitch))
-            .ToList();
-
-        // Owner-managed permanents matching this date's weekday block the slot
-        // exactly like a real booking would. They never produce a Booking row, so
-        // we feed them straight into the same capacity-unit reducer.
-        var dow = (int)bookingDate.DayOfWeek;
-        var sameDayPermanents = StandingOccurrence.NotYetRecorded(
-            await _db.PermanentBookings
-                .Where(p => p.VenueId == req.VenueId
-                    && p.Status == "active"
-                    && p.DayOfWeek == dow)
-                .ToListAsync(),
-            // A rule whose week has already been recorded is no longer what holds the slot —
-            // the booking it produced is. Counting both would consume the pitch twice.
-            sameDayBookings);
-        var pitchPermanents = sameDayPermanents
-            .Where(p => PermanentOnPitch(p, venue, pitch))
-            .ToList();
-
-        var capacity = PitchSizes.CapacityOf(pitch);
-        var requestedWeight = pitchSize != null ? PitchSizes.WeightOf(pitchSize) : 1;
-        var isSubdividable = pitch.ParentSize != null && (pitch.SubSizes?.Count ?? 0) > 0;
-
-        var overlapping = new List<Booking>();
-        foreach (var existing in pitchBookings)
-        {
-            if (!TimeSpan.TryParse(existing.StartTime, out var existingStart)) continue;
-            var existingEnd = existingStart + TimeSpan.FromMinutes(existing.Duration);
-            if (startTimeSpan < existingEnd && endTime > existingStart)
-                overlapping.Add(existing);
-        }
-        var overlappingPerms = new List<PermanentBooking>();
-        foreach (var perm in pitchPermanents)
-        {
-            if (!TimeSpan.TryParse(perm.StartTime, out var permStart)) continue;
-            var permEnd = permStart + TimeSpan.FromMinutes(perm.Duration);
-            if (startTimeSpan < permEnd && endTime > permStart)
-                overlappingPerms.Add(perm);
-        }
-
-        if (isSubdividable)
-        {
-            var usedUnits = overlapping.Sum(b => PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize))
-                          + overlappingPerms.Sum(p => PitchSizes.WeightOf(p.PitchSize ?? pitch.ParentSize));
-            if (usedUnits + requestedWeight > capacity)
-            {
-                var remaining = capacity - usedUnits;
-                return Conflict(new ApiResponse<object>
-                {
-                    Success = false,
-                    Message = $"This size is not available at that time. {remaining} of {capacity} units remain on {pitch.Name}."
-                });
-            }
-        }
-        else if (overlapping.Count > 0 || overlappingPerms.Count > 0)
-        {
-            if (overlapping.Count > 0)
-            {
-                var first = overlapping[0];
-                var existingStart = TimeSpan.Parse(first.StartTime!);
-                var existingEnd = existingStart + TimeSpan.FromMinutes(first.Duration);
-                return Conflict(new ApiResponse<object>
-                {
-                    Success = false,
-                    Message = $"Time slot conflicts with an existing booking on {pitch.Name} ({first.StartTime} - {existingEnd:hh\\:mm})"
-                });
-            }
-            else
-            {
-                var first = overlappingPerms[0];
-                var permStart = TimeSpan.Parse(first.StartTime);
-                var permEnd = permStart + TimeSpan.FromMinutes(first.Duration);
-                return Conflict(new ApiResponse<object>
-                {
-                    Success = false,
-                    Message = $"Time slot conflicts with a recurring reservation on {pitch.Name} ({first.StartTime} - {permEnd:hh\\:mm})"
-                });
-            }
-        }
+        var conflict = await CheckSlotFreeAsync(venue, plan, excludeBookingId: null);
+        if (conflict != null)
+            return Conflict(new ApiResponse<object> { Success = false, Message = conflict });
 
         // Reject card payments (coming soon)
         if (req.PaymentMethod == "stripe")
@@ -492,14 +330,7 @@ public class BookingsController : ControllerBase
         //   2. pitch.pricePerHour           (per-pitch default)
         //   3. venue.pricePerHour           (venue-level fallback)
         var platformFee = await _settings.GetPlatformFeePercentageAsync();
-        double hourlyPrice;
-        if (pitchSize != null && pitch.SizePrices.TryGetValue(pitchSize, out var perSize))
-            hourlyPrice = perSize;
-        else if (pitch.PricePerHour > 0)
-            hourlyPrice = pitch.PricePerHour;
-        else
-            hourlyPrice = venue.PricePerHour;
-        var totalAmount = hourlyPrice * req.Duration / 60.0;
+        var totalAmount = PriceFor(venue, pitch, pitchSize, req.Duration);
         var depositAmount = totalAmount * (venue.DepositPercentage / 100.0);
         var systemFeePercentage = isManual ? 0.0 : platformFee;
         var systemFee = isManual ? 0.0 : totalAmount * (platformFee / 100.0);
@@ -584,8 +415,13 @@ public class BookingsController : ControllerBase
 
     // PATCH /api/v1/bookings/{id}/cancel — cancel a booking
     [HttpPatch("{id}/cancel")]
-    public async Task<IActionResult> Cancel(string id)
+    public async Task<IActionResult> Cancel(
+        string id,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] CancelBookingRequest? req = null)
     {
+        if (!CancellationPolicy.IsValidChoice(req?.Refund))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "refund must be policy, all or none" });
+
         var booking = await _db.Bookings
             .Include(b => b.Venue)
             .Include(b => b.Player)
@@ -618,6 +454,20 @@ public class BookingsController : ControllerBase
         if (booking.Status == "no_show")
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot cancel a no-show booking" });
 
+        // Money already paid. A player cancelling their own booking always gets the venue's
+        // rule; the venue side may override it ("refund all" / "keep"), but only someone who
+        // may record payments can make the ledger move — anyone else cancels and the money
+        // stays where it is for the owner to decide.
+        var choice = isOwnPlayerBooking ? CancellationPolicy.Policy : req?.Refund ?? CancellationPolicy.Policy;
+        var refund = CancellationPolicy.RefundFor(booking, booking.Venue, choice, DateTime.UtcNow);
+        var mayRecord = isOwnPlayerBooking || CanOnBooking(StaffPermissions.PaymentsRecord, booking);
+        if (refund > 0 && !mayRecord)
+        {
+            if (choice == CancellationPolicy.All)
+                return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Refunds need the permission to record payments." });
+            refund = 0;
+        }
+
         booking.Status = "cancelled";
         // Disarm. A human cancelled this one — leaving a live deadline on a terminal row
         // would let the sweep stamp AutoCancelledAt on it later and rewrite whose decision
@@ -627,6 +477,16 @@ public class BookingsController : ControllerBase
         // booking in the owner's queue to approve — and approving it revived the booking.
         if (booking.PaymentProofStatus == "pending_review")
             booking.PaymentProofStatus = "cancelled";
+
+        if (refund > 0)
+        {
+            var (row, _) = PaymentLedger.Refund(
+                booking, refund, "refund",
+                // A player's cancellation is the rule's decision, not theirs to record.
+                isOwnPlayerBooking ? null : UserId,
+                choice == CancellationPolicy.All ? "Refunded on cancellation" : "Refunded by the cancellation policy");
+            if (row != null) _db.Payments.Add(row);
+        }
         await _db.SaveChangesAsync();
 
         // Notify player + owner about cancellation (non-blocking)
@@ -636,11 +496,244 @@ public class BookingsController : ControllerBase
         return Ok(new ApiResponse<BookingResponse>
         {
             Data = ToDto(booking),
-            Message = "Booking cancelled successfully"
+            Message = refund > 0
+                ? $"Booking cancelled; {refund:0.###} JOD refunded"
+                : "Booking cancelled successfully"
+        });
+    }
+
+    /// <summary>
+    /// Record money returned to the customer, or correct an amount recorded by mistake. The
+    /// ledger gets a negative row; nothing already recorded is edited.
+    /// </summary>
+    [HttpPost("{id}/refund")]
+    public async Task<IActionResult> Refund(string id, [FromBody] RefundRequest req)
+    {
+        if (req.Kind is not ("refund" or "correction"))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "kind must be refund or correction" });
+
+        var booking = await _db.Bookings
+            .Include(b => b.Venue)
+            .Include(b => b.Player)
+            .Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.Id == id);
+        if (booking == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
+        if (!CanOnBooking(StaffPermissions.PaymentsRecord, booking))
+            return Forbid();
+
+        var (row, error) = PaymentLedger.Refund(booking, req.Amount, req.Kind, UserId, req.Note);
+        if (row == null)
+            return BadRequest(new ApiResponse<object> { Success = false, Message = error! });
+
+        _db.Payments.Add(row);
+        await _db.SaveChangesAsync();
+
+        return Ok(new ApiResponse<BookingResponse>
+        {
+            Data = ToDto(booking),
+            Message = req.Kind == "refund" ? "Refund recorded" : "Correction recorded"
         });
     }
 
     // PATCH /api/v1/bookings/{id}/complete — mark a confirmed booking as completed
+    // GET /api/v1/bookings/{id}/receipt — what a printed receipt shows
+    //
+    // Built from the ledger rows, not from amount_paid alone, so the paper matches the money
+    // report line for line: every payment, refund and correction, dated, with its method.
+    [HttpGet("{id}/receipt")]
+    public async Task<IActionResult> Receipt(string id)
+    {
+        var booking = await _db.Bookings
+            .Include(b => b.Venue)
+            .Include(b => b.Player)
+            .Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.Id == id);
+        if (booking == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
+        if (!CanOnBooking(StaffPermissions.PaymentsView, booking))
+            return Forbid();
+
+        var company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.OwnerId == booking.Venue.OwnerId);
+        var rows = await _db.Payments.AsNoTracking()
+            .Where(p => p.BookingId == booking.Id)
+            .OrderBy(p => p.Date)
+            .ToListAsync();
+        var pitch = booking.PitchId == null
+            ? null
+            : PitchSizes.ResolvedPitches(booking.Venue).FirstOrDefault(p => p.Id == booking.PitchId);
+
+        // A counter booking's player row is the owner's own account; the person is the customer.
+        var customerName = booking.Customer?.Name ?? (booking.IsManual ? null : booking.Player?.Name);
+        var customerPhone = booking.Customer?.Phone ?? (booking.IsManual ? null : booking.Player?.Phone);
+
+        return Ok(new ApiResponse<BookingReceipt>
+        {
+            Data = new BookingReceipt
+            {
+                ReceiptNumber = booking.Id.ToUpperInvariant(),
+                IssuedAt = DateTime.UtcNow,
+                CompanyName = company?.Name,
+                CompanyNameAr = company?.NameAr,
+                VenueName = booking.Venue.Name,
+                VenueNameAr = booking.Venue.NameAr,
+                VenueAddress = booking.Venue.Address,
+                VenueCity = booking.Venue.City,
+                CustomerName = customerName,
+                CustomerPhone = customerPhone,
+                Sport = booking.Sport,
+                PitchName = pitch?.Name,
+                PitchSize = booking.PitchSize,
+                Date = booking.Date.ToString("yyyy-MM-dd"),
+                StartTime = booking.StartTime,
+                Duration = booking.Duration,
+                Status = booking.Status,
+                TotalAmount = Math.Round(booking.TotalAmount, 3),
+                AmountPaid = Math.Round(booking.AmountPaid, 3),
+                // A cancelled booking owes nothing, whatever was kept from it.
+                Balance = booking.Status == "cancelled"
+                    ? 0
+                    : Math.Max(0, Math.Round(booking.TotalAmount - booking.AmountPaid, 3)),
+                Payments = rows.Select(p => new ReceiptLine
+                {
+                    Date = p.Date,
+                    Amount = Math.Round(p.Amount, 3),
+                    Method = p.Method,
+                    Kind = p.Kind,
+                    Note = p.Note,
+                }).ToList(),
+            }
+        });
+    }
+
+    /// <summary>Statuses a booking can still be moved or re-priced in: it has not happened yet.</summary>
+    private static readonly HashSet<string> EditableStatuses =
+        new() { "pending", "pending_payment", "pending_review", "confirmed" };
+
+    // PATCH /api/v1/bookings/{id} — move a booking (date, time, length, pitch, size) or re-price it
+    //
+    // The new slot goes through exactly the checks a new booking does (PlanSlot, then
+    // CheckSlotFreeAsync under the venue lock), with this booking left out of the conflict
+    // scan. Money already paid is never touched here: if the new price is below it, the
+    // overpayment is reported and a refund is a separate, deliberate act.
+    [HttpPatch("{id}")]
+    public async Task<IActionResult> Update(string id, [FromBody] UpdateBookingRequest req)
+    {
+        var booking = await _db.Bookings
+            .Include(b => b.Venue)
+            .Include(b => b.Player)
+            .Include(b => b.Customer)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(b => b.Id == id);
+        if (booking == null)
+            return NotFound(new ApiResponse<object> { Success = false, Message = "Booking not found" });
+        if (!CanOnBooking(StaffPermissions.BookingsManage, booking))
+            return Forbid();
+        if (!EditableStatuses.Contains(booking.Status))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Only upcoming bookings can be changed." });
+
+        var priceGiven = req.TotalAmount is { } asked && Math.Abs(asked - booking.TotalAmount) > 0.0005;
+        if (priceGiven && !CanOnBooking(StaffPermissions.PaymentsRecord, booking))
+            return Forbid();
+
+        var venue = booking.Venue;
+
+        // The slot as asked for, with anything left out kept from the booking. A legacy booking
+        // with no pitch id lives on the first pitch of its sport (see BookingOnPitch).
+        var currentPitchId = booking.PitchId
+            ?? PitchSizes.ResolvedPitches(venue)
+                .FirstOrDefault(p => string.Equals(p.Sport, booking.Sport, StringComparison.OrdinalIgnoreCase))?.Id;
+        var pitchChanged = req.PitchId != null && req.PitchId != currentPitchId;
+        var date = req.Date ?? booking.Date.ToString("yyyy-MM-dd");
+        var startTime = req.StartTime ?? booking.StartTime;
+        var duration = req.Duration ?? booking.Duration;
+        // A different pitch may not offer the old size; left out, it falls back to the pitch's own.
+        var size = req.PitchSize ?? (pitchChanged ? null : booking.PitchSize);
+
+        var durationChanged = duration != booking.Duration;
+        var sizeChanged = size != booking.PitchSize;
+        var timeChanged = (req.Date != null && DateTime.TryParse(req.Date, out var d) && d.Date != booking.Date.Date)
+            || (req.StartTime != null && !SameTime(req.StartTime, booking.StartTime));
+        var slotChanged = timeChanged || durationChanged || pitchChanged || sizeChanged;
+
+        await using var tx = await _db.Database.BeginTransactionAsync();
+
+        SlotPlan? plan = null;
+        if (slotChanged)
+        {
+            // An old row may carry no sport; its pitch still says what it is.
+            var sport = booking.Sport
+                ?? PitchSizes.ResolvedPitches(venue).FirstOrDefault(p => p.Id == currentPitchId)?.Sport
+                ?? "";
+            var invalid = PlanSlot(venue, sport, date, startTime, duration, pitchChanged ? req.PitchId : currentPitchId, size, out plan);
+            if (invalid != null) return invalid;
+
+            await LockVenueAsync(venue.Id);
+            var conflict = await CheckSlotFreeAsync(venue, plan!, excludeBookingId: booking.Id);
+            if (conflict != null)
+                return Conflict(new ApiResponse<object> { Success = false, Message = conflict });
+
+            booking.Date = plan!.Date;
+            booking.StartTime = plan.StartTime;
+            booking.Duration = plan.Duration;
+            booking.PitchId = IsLegacyPitchId(plan.Pitch.Id) ? null : plan.Pitch.Id;
+            booking.PitchSize = plan.PitchSize;
+
+            // An unpaid app booking is released before kick-off. Moved earlier, it must be
+            // released earlier too; moved later, it gets no extra time to pay.
+            if (booking.PaymentDeadlineAt is { } deadline)
+            {
+                var recomputed = PaymentDeadline.Compute(DateTime.UtcNow, booking.Date, booking.StartTime, _expiry);
+                if (recomputed < deadline) booking.PaymentDeadlineAt = recomputed;
+            }
+        }
+
+        // Re-price: an explicit price wins; otherwise a longer game, another pitch or another
+        // size is priced from the list. A move to another time keeps the price it had.
+        double? newTotal = null;
+        if (req.TotalAmount is { } explicitPrice)
+            newTotal = Math.Round(explicitPrice, 3);
+        else if (plan != null && (durationChanged || pitchChanged || sizeChanged))
+            newTotal = Math.Round(PriceFor(venue, plan.Pitch, plan.PitchSize, plan.Duration), 3);
+
+        if (newTotal is { } total && Math.Abs(total - booking.TotalAmount) > 0.0005)
+        {
+            booking.Amount = total;
+            booking.TotalAmount = total;
+            booking.DepositAmount = total * (venue.DepositPercentage / 100.0);
+            // The fee rate agreed when the booking was made stays; only the base changes.
+            booking.SystemFee = total * (booking.SystemFeePercentage / 100.0);
+            booking.OwnerAmount = total - booking.SystemFee;
+        }
+
+        if (req.Notes != null)
+            booking.Notes = req.Notes;
+
+        await _db.SaveChangesAsync();
+        await tx.CommitAsync();
+
+        if (timeChanged && !booking.IsManual)
+        {
+            try { await _notifications.NotifyBookingMoved(booking); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Booking-moved notification failed for {BookingId}", booking.Id); }
+        }
+
+        var overpaid = Math.Round(booking.AmountPaid - booking.TotalAmount, 3);
+        return Ok(new ApiResponse<BookingResponse>
+        {
+            Data = ToDto(booking),
+            Message = overpaid > 0
+                ? $"Booking updated; {overpaid:0.###} JOD was paid above the new price"
+                : "Booking updated"
+        });
+    }
+
+    /// <summary>"9:00" and "09:00" are the same time.</summary>
+    private static bool SameTime(string? a, string? b) =>
+        TimeSpan.TryParse(a, out var x) && TimeSpan.TryParse(b, out var y) ? x == y : a == b;
+
     [HttpPatch("{id}/complete")]
     public async Task<IActionResult> Complete(string id)
     {
@@ -1297,10 +1390,7 @@ public class BookingsController : ControllerBase
         // read, not before the write.
         await using var tx = await _db.Database.BeginTransactionAsync();
 
-        _ = await _db.Venues
-            .FromSql($"SELECT * FROM venues WHERE id = {req.VenueId} FOR UPDATE")
-            .AsNoTracking()
-            .ToListAsync();
+        await LockVenueAsync(req.VenueId);
 
         // Pre-load candidate bookings in the date range. Scope to the same pitch
         // only — bookings on other pitches never block this one. Load everything
@@ -1342,6 +1432,9 @@ public class BookingsController : ControllerBase
         }).ToList();
         var permUnits = permOverlaps.Sum(p => PitchSizes.WeightOf(p.PitchSize ?? pitch.ParentSize));
 
+        // A blocked week is a conflict like any other: skipped or fatal per the policy.
+        var blocks = await VenueBlocks.LoadAsync(_db, [req.VenueId], startDate.Date, endDate.Date.AddDays(2));
+
         var conflictDates = new List<DateTime>();
         var validDates = new List<DateTime>();
         foreach (var date in occurrences)
@@ -1367,6 +1460,9 @@ public class BookingsController : ControllerBase
             {
                 conflict = overlaps.Count > 0 || permOverlaps.Count > 0;
             }
+
+            if (VenueBlocks.FirstOverlap(blocks, pitch.Id, date, startTimeSpan, req.Duration) != null)
+                conflict = true;
 
             if (conflict) conflictDates.Add(date);
             else validDates.Add(date);
@@ -1485,13 +1581,12 @@ public class BookingsController : ControllerBase
         if (group == null)
             return NotFound(new ApiResponse<object> { Success = false, Message = "Series not found" });
 
-        // Allow-list: the series owner's player account, the venue side, or an admin.
-        var canCancelSeries =
-            UserRole == "super_admin"
-            || (UserRole == "venue_owner" && group.Venue.OwnerId == UserId)
-            || (UserRole == "player" && group.PlayerId == UserId);
-        if (!canCancelSeries)
+        // The series' own player, or the venue side with booking rights — staff included, the
+        // same rule as cancelling one booking (this used to be admin and owner only).
+        var isOwnSeries = UserRole == "player" && group.PlayerId == UserId;
+        if (!isOwnSeries && !_access.Can(StaffPermissions.BookingsManage, group.Venue))
             return Forbid();
+        var mayRecord = isOwnSeries || _access.Can(StaffPermissions.PaymentsRecord, group.Venue);
 
         var today = PlatformConstants.JordanToday();
         var active = new[] { "pending", "pending_payment", "pending_review", "confirmed" };
@@ -1502,13 +1597,29 @@ public class BookingsController : ControllerBase
                 && active.Contains(b.Status))
             .ToListAsync();
 
-        foreach (var b in toCancel) b.Status = "cancelled";
+        // Each week follows the venue's rule on its own: next week's session may be refundable
+        // while tonight's is not.
+        var now = DateTime.UtcNow;
+        double refunded = 0;
+        foreach (var b in toCancel)
+        {
+            var refund = mayRecord ? CancellationPolicy.RefundFor(b, group.Venue, CancellationPolicy.Policy, now) : 0;
+            b.Status = "cancelled";
+            b.PaymentDeadlineAt = null;
+            if (b.PaymentProofStatus == "pending_review") b.PaymentProofStatus = "cancelled";
+            if (refund > 0)
+            {
+                var (row, _) = PaymentLedger.Refund(b, refund, "refund", isOwnSeries ? null : UserId,
+                    "Refunded by the cancellation policy (series cancelled)");
+                if (row != null) { _db.Payments.Add(row); refunded += refund; }
+            }
+        }
         group.Status = "cancelled";
         await _db.SaveChangesAsync();
 
         return Ok(new ApiResponse<object>
         {
-            Data = new { cancelledCount = toCancel.Count, groupId = group.Id },
+            Data = new { cancelledCount = toCancel.Count, groupId = group.Id, refunded = Math.Round(refunded, 3) },
             Message = $"Cancelled {toCancel.Count} upcoming session(s)"
         });
     }
@@ -1564,6 +1675,7 @@ public class BookingsController : ControllerBase
                 City = b.Venue.City,
                 CityAr = b.Venue.CityAr,
                 Images = b.Venue.Images?.Select(x => UploadUrlHelper.Normalize(x, _uploadsBaseUrl)).ToList()!,
+                FreeCancelHours = b.Venue.FreeCancelHours,
                 // The alias was stripped from the venue routes and left here, so it
                 // stayed harvestable: POST a booking against any venue id, read it
                 // off the 201, cancel. Venue ids come from the anonymous public list,
@@ -1626,6 +1738,231 @@ public class BookingsController : ControllerBase
         }
 
         return dto;
+    }
+
+    /// <summary>A slot that passed the shape checks: a real date, start, duration, pitch and size.</summary>
+    private sealed record SlotPlan(DateTime Date, TimeSpan Start, int Duration, PitchDto Pitch, string? PitchSize)
+    {
+        public string StartTime => Start.ToString(@"hh\:mm");
+    }
+
+    /// <summary>
+    /// Everything about a requested slot that can be decided without looking at other bookings:
+    /// the date is real and not past, the time parses, the duration is within the venue's range,
+    /// the pitch exists for the sport, the slot is inside operating hours and the size is
+    /// offered. Shared by create and move so the two can never accept different things.
+    /// </summary>
+    private IActionResult? PlanSlot(
+        Venue venue, string sport, string? date, string? startTime, int duration,
+        string? pitchId, string? requestedSize, out SlotPlan? plan)
+    {
+        plan = null;
+
+        if (!DateTime.TryParse(date, out var bookingDate))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid date format. Use YYYY-MM-DD" });
+
+        if (bookingDate.Date < PlatformConstants.JordanToday())
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Cannot book in the past" });
+
+        if (string.IsNullOrEmpty(startTime) || !TimeSpan.TryParse(startTime, out var startTimeSpan))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "Invalid start time format. Use HH:mm" });
+
+        if (duration < venue.MinBookingDuration || duration > venue.MaxBookingDuration)
+            return BadRequest(new ApiResponse<object>
+            {
+                Success = false,
+                Message = $"Duration must be between {venue.MinBookingDuration} and {venue.MaxBookingDuration} minutes"
+            });
+
+        // Resolve which pitch this booking lives on.
+        var pitchResolution = ResolvePitchForBooking(venue, pitchId, sport);
+        if (pitchResolution.Error != null)
+            return pitchResolution.Status == 404
+                ? NotFound(new ApiResponse<object> { Success = false, Message = pitchResolution.Error })
+                : BadRequest(new ApiResponse<object> { Success = false, Message = pitchResolution.Error });
+        var pitch = pitchResolution.Pitch!;
+
+        // Operating-hours check. Deliberately after pitch resolution so a pitch with its
+        // own hours is honoured exactly as the availability view does.
+        //
+        // This used to build its own key as DayOfWeek.ToString().ToLower()[..3] ("mon")
+        // and look up ONLY that. The dashboard writes full day names ("monday"), so the
+        // lookup missed, the whole block was skipped, and operating hours were never
+        // enforced on booking creation for any venue — a player could book 03:00 on a
+        // closed day. It also never read the "closed" flag. AvailabilityHelper accepts
+        // both key styles and honours "closed", and is the same code the availability
+        // view uses, so the two can no longer disagree.
+        var dayName = bookingDate.DayOfWeek.ToString().ToLower();
+
+        var hoursCheck = AvailabilityHelper.CheckSlotAgainstHours(
+            venue, pitch, dayName, startTimeSpan, duration);
+        switch (hoursCheck.Verdict)
+        {
+            case SlotHoursVerdict.Misconfigured:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "This venue's operating hours are misconfigured. Please contact the venue."
+                });
+            case SlotHoursVerdict.OutsideHours:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = $"Booking must be within operating hours ({hoursCheck.Open} - {hoursCheck.Close})"
+                });
+            case SlotHoursVerdict.Closed:
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = "The venue is closed on this day."
+                });
+        }
+
+        // Pitch-size validation. Subdivision is football-only and carried on the pitch.
+        string? pitchSize = null;
+        if (pitch.ParentSize != null)
+        {
+            pitchSize = requestedSize ?? pitch.ParentSize;
+            var offered = PitchSizes.OfferedSizes(pitch);
+            if (!offered.Contains(pitchSize))
+                return BadRequest(new ApiResponse<object>
+                {
+                    Success = false,
+                    Message = $"Pitch '{pitch.Name}' does not offer {pitchSize}-aside. Offered: {string.Join(", ", offered)}"
+                });
+        }
+
+        plan = new SlotPlan(bookingDate.Date, startTimeSpan, duration, pitch, pitchSize);
+        return null;
+    }
+
+    /// <summary>
+    /// Takes the per-venue row lock that serializes every decision about this venue's slots.
+    /// Call inside a transaction, before reading anything the decision depends on.
+    /// </summary>
+    private Task LockVenueAsync(string venueId) =>
+        _db.Venues
+            .FromSql($"SELECT * FROM venues WHERE id = {venueId} FOR UPDATE")
+            .AsNoTracking()
+            .ToListAsync();
+
+    /// <summary>
+    /// Is the planned slot free? Returns null when it is, or the message to send with a 409.
+    /// Must run under <see cref="LockVenueAsync"/>, or two requests can both see "free".
+    ///
+    /// <paramref name="excludeBookingId"/> is the booking being moved: it must not count
+    /// against itself, or a booking could never be extended by half an hour or shifted
+    /// fifteen minutes into its own old time.
+    /// </summary>
+    private async Task<string?> CheckSlotFreeAsync(Venue venue, SlotPlan plan, string? excludeBookingId)
+    {
+        var pitch = plan.Pitch;
+        var startTimeSpan = plan.Start;
+
+        // Blocked time first: no size or spare capacity makes a closed pitch bookable.
+        var block = await VenueBlocks.OverlapAsync(_db, venue.Id, pitch.Id, plan.Date, plan.Start, plan.Duration);
+        if (block != null)
+            return VenueBlocks.Describe(block, pitch.Name);
+
+        // Overlap detection is scoped per-pitch. A booking on Pitch 1 never blocks
+        // Pitch 2. Inside the pitch, subdividable pitches use the capacity-unit pool
+        // (e.g. 11-aside = 4 units, 8 = 2, 6 = 1), non-subdividable pitches use the
+        // naive any-overlap rule.
+        var endTime = startTimeSpan + TimeSpan.FromMinutes(plan.Duration);
+        var sameDayBookings = await _db.Bookings
+            .Where(b => b.VenueId == venue.Id
+                && b.Date.Date == plan.Date
+                && b.Status != "cancelled"
+                && b.StartTime != null)
+            .ToListAsync();
+        var pitchBookings = sameDayBookings
+            .Where(b => b.Id != excludeBookingId)
+            .Where(b => BookingOnPitch(b, venue, pitch))
+            .ToList();
+
+        // Owner-managed permanents matching this date's weekday block the slot
+        // exactly like a real booking would. They never produce a Booking row, so
+        // we feed them straight into the same capacity-unit reducer.
+        var dow = (int)plan.Date.DayOfWeek;
+        var sameDayPermanents = StandingOccurrence.NotYetRecorded(
+            await _db.PermanentBookings
+                .Where(p => p.VenueId == venue.Id
+                    && p.Status == "active"
+                    && p.DayOfWeek == dow)
+                .ToListAsync(),
+            // A rule whose week has already been recorded is no longer what holds the slot —
+            // the booking it produced is. Counting both would consume the pitch twice.
+            // (The booking being moved still counts here: its week stays recorded.)
+            sameDayBookings);
+        var pitchPermanents = sameDayPermanents
+            .Where(p => PermanentOnPitch(p, venue, pitch))
+            .ToList();
+
+        var capacity = PitchSizes.CapacityOf(pitch);
+        var requestedWeight = plan.PitchSize != null ? PitchSizes.WeightOf(plan.PitchSize) : 1;
+        var isSubdividable = pitch.ParentSize != null && (pitch.SubSizes?.Count ?? 0) > 0;
+
+        var overlapping = new List<Booking>();
+        foreach (var existing in pitchBookings)
+        {
+            if (!TimeSpan.TryParse(existing.StartTime, out var existingStart)) continue;
+            var existingEnd = existingStart + TimeSpan.FromMinutes(existing.Duration);
+            if (startTimeSpan < existingEnd && endTime > existingStart)
+                overlapping.Add(existing);
+        }
+        var overlappingPerms = new List<PermanentBooking>();
+        foreach (var perm in pitchPermanents)
+        {
+            if (!TimeSpan.TryParse(perm.StartTime, out var permStart)) continue;
+            var permEnd = permStart + TimeSpan.FromMinutes(perm.Duration);
+            if (startTimeSpan < permEnd && endTime > permStart)
+                overlappingPerms.Add(perm);
+        }
+
+        if (isSubdividable)
+        {
+            var usedUnits = overlapping.Sum(b => PitchSizes.WeightOf(b.PitchSize ?? pitch.ParentSize))
+                          + overlappingPerms.Sum(p => PitchSizes.WeightOf(p.PitchSize ?? pitch.ParentSize));
+            if (usedUnits + requestedWeight > capacity)
+            {
+                var remaining = capacity - usedUnits;
+                return $"This size is not available at that time. {remaining} of {capacity} units remain on {pitch.Name}.";
+            }
+        }
+        else if (overlapping.Count > 0)
+        {
+            var first = overlapping[0];
+            var existingStart = TimeSpan.Parse(first.StartTime!);
+            var existingEnd = existingStart + TimeSpan.FromMinutes(first.Duration);
+            return $"Time slot conflicts with an existing booking on {pitch.Name} ({first.StartTime} - {existingEnd:hh\\:mm})";
+        }
+        else if (overlappingPerms.Count > 0)
+        {
+            var first = overlappingPerms[0];
+            var permStart = TimeSpan.Parse(first.StartTime);
+            var permEnd = permStart + TimeSpan.FromMinutes(first.Duration);
+            return $"Time slot conflicts with a recurring reservation on {pitch.Name} ({first.StartTime} - {permEnd:hh\\:mm})";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The list price of a slot. Resolution order, pitch-scoped:
+    ///   1. pitch.sizePrices[pitchSize]  (per-pitch, per-size)
+    ///   2. pitch.pricePerHour           (per-pitch default)
+    ///   3. venue.pricePerHour           (venue-level fallback)
+    /// </summary>
+    private static double PriceFor(Venue venue, PitchDto pitch, string? pitchSize, int durationMinutes)
+    {
+        double hourlyPrice;
+        if (pitchSize != null && pitch.SizePrices.TryGetValue(pitchSize, out var perSize))
+            hourlyPrice = perSize;
+        else if (pitch.PricePerHour > 0)
+            hourlyPrice = pitch.PricePerHour;
+        else
+            hourlyPrice = venue.PricePerHour;
+        return hourlyPrice * durationMinutes / 60.0;
     }
 
     /// <summary>Result of pitch resolution for an incoming booking request.</summary>

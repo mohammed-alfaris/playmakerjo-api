@@ -94,6 +94,7 @@ public class VenuesController : ControllerBase
         MinBookingDuration = v.MinBookingDuration,
         MaxBookingDuration = v.MaxBookingDuration,
         DepositPercentage = v.DepositPercentage,
+        FreeCancelHours = v.FreeCancelHours,
         ParentSize = v.ParentSize,
         SubSizes = v.SubSizes,
         SizePrices = v.SizePrices,
@@ -392,8 +393,11 @@ public class VenuesController : ControllerBase
             .Where(p => venueIds.Contains(p.VenueId) && p.Status == "active" && p.DayOfWeek == dow)
             .ToListAsync();
 
+        var dayBlocks = await VenueBlocks.LoadAsync(_db, venueIds, bookingDate.Date, bookingDate.Date.AddDays(2));
+
         var bookingsByVenue = dayBookings.GroupBy(b => b.VenueId).ToDictionary(g => g.Key, g => g.ToList());
         var permanentsByVenue = dayPermanents.GroupBy(p => p.VenueId).ToDictionary(g => g.Key, g => g.ToList());
+        var blocksByVenue = dayBlocks.ToLookup(b => b.VenueId);
 
         var dayName = bookingDate.DayOfWeek.ToString().ToLower();
         var available = candidates.Where(v =>
@@ -402,7 +406,8 @@ public class VenuesController : ControllerBase
             var vPermanents = permanentsByVenue.GetValueOrDefault(v.Id) ?? [];
             return PitchSizes.ResolvedPitches(v)
                 .Where(p => string.IsNullOrEmpty(sport) || string.Equals(p.Sport, sport, StringComparison.OrdinalIgnoreCase))
-                .Any(p => AvailabilityHelper.PitchHasCapacity(v, p, start, duration, dayName, vBookings, vPermanents));
+                .Any(p => AvailabilityHelper.PitchHasCapacity(v, p, start, duration, dayName, vBookings, vPermanents)
+                    && VenueBlocks.FirstOverlap(blocksByVenue[v.Id], p.Id, bookingDate, start, duration) == null);
         }).ToList();
 
         var total = available.Count;
@@ -583,6 +588,8 @@ public class VenuesController : ControllerBase
             venue.MaxBookingDuration = req.MaxBookingDuration.Value;
         if (req.DepositPercentage.HasValue)
             venue.DepositPercentage = req.DepositPercentage.Value;
+        if (req.FreeCancelHours.HasValue)
+            venue.FreeCancelHours = req.FreeCancelHours.Value;
         if (req.SportsConfig != null)
             venue.SportsConfig = req.SportsConfig;
         if (req.Pitches != null)
@@ -674,6 +681,7 @@ public class VenuesController : ControllerBase
         if (req.MinBookingDuration.HasValue) venue.MinBookingDuration = req.MinBookingDuration.Value;
         if (req.MaxBookingDuration.HasValue) venue.MaxBookingDuration = req.MaxBookingDuration.Value;
         if (req.DepositPercentage.HasValue) venue.DepositPercentage = req.DepositPercentage.Value;
+        if (req.FreeCancelHours.HasValue) venue.FreeCancelHours = req.FreeCancelHours.Value;
 
         // Either list may be sent alone. The other keeps its stored value, and a typed label
         // that matches the catalog still lands in FeatureIds — so both are always rewritten.
@@ -908,6 +916,10 @@ public class VenuesController : ControllerBase
 
         var pitches = PitchSizes.ResolvedPitches(venue);
 
+        // Blocked time comes back as booked ranges at full weight, so every client — including
+        // app builds that have never heard of blocks — refuses to offer it.
+        var blocks = await VenueBlocks.ForDateAsync(_db, venueId, bookingDate);
+
         // Single-pitch request: build the response scoped to that pitch only and
         // keep the legacy top-level shape so old clients keep working.
         if (!string.IsNullOrEmpty(pitchId))
@@ -917,6 +929,7 @@ public class VenuesController : ControllerBase
                 return NotFound(new ApiResponse<object> { Success = false, Message = "Pitch not found" });
 
             var resp = BuildAvailabilityForPitch(venue, pitch, existingBookings, activePermanents, venueHours, bookingDate);
+            resp.BookedSlots = resp.BookedSlots.Concat(BlockedSlots(blocks, pitch, bookingDate)).OrderBy(x => x.StartTime).ToList();
             return Ok(new ApiResponse<AvailableSlotsResponse> { Data = resp });
         }
 
@@ -954,14 +967,29 @@ public class VenuesController : ControllerBase
                 PitchSize = p.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, p.PitchId),
                 UnitWeight = PitchSizes.WeightOf(p.PitchSize ?? PitchSizes.ParentSizeForPitch(venue, p.PitchId))
             }));
-        legacyBookedSlots = legacyBookedSlots.OrderBy(s => s.StartTime).ToList();
-
         var legacyOffered = PitchSizes.OfferedSizesForSport(venue, "football");
         var legacyCapacity = PitchSizes.CapacityOfForSport(venue, "football");
+
+        foreach (var block in blocks)
+        {
+            if (VenueBlocks.MinutesOn(block, bookingDate) is not { } m || m.From >= 24 * 60) continue;
+            var to = Math.Min(m.To, 24 * 60);
+            legacyBookedSlots.Add(new BookedSlotInfo
+            {
+                StartTime = TimeSpan.FromMinutes(m.From).ToString(@"hh\:mm"),
+                Duration = (int)(to - m.From),
+                PitchId = block.PitchId,
+                UnitWeight = Math.Max(1, legacyCapacity),
+                Blocked = true,
+            });
+        }
+        legacyBookedSlots = legacyBookedSlots.OrderBy(s => s.StartTime).ToList();
 
         var perPitch = pitches
             .Select(p => BuildPitchAvailability(venue, p, existingBookings, activePermanents, venueHours, bookingDate))
             .ToList();
+        foreach (var (pa, p) in perPitch.Zip(pitches))
+            pa.BookedSlots = pa.BookedSlots.Concat(BlockedSlots(blocks, p, bookingDate)).OrderBy(x => x.StartTime).ToList();
 
         return Ok(new ApiResponse<AvailableSlotsResponse>
         {
@@ -982,6 +1010,30 @@ public class VenuesController : ControllerBase
                 Pitches = perPitch
             }
         });
+    }
+
+    /// <summary>
+    /// This pitch's blocked time on the date, as booked ranges at the pitch's full capacity.
+    /// Clipped to the calendar day: "HH:mm" cannot say 25:00, and a booking attempt into a
+    /// block past midnight is still refused by the create check.
+    /// </summary>
+    private static IEnumerable<BookedSlotInfo> BlockedSlots(List<VenueBlock> blocks, PitchDto pitch, DateTime date)
+    {
+        foreach (var block in blocks.Where(b => VenueBlocks.Covers(b, pitch.Id)))
+        {
+            if (VenueBlocks.MinutesOn(block, date) is not { } m || m.From >= 24 * 60) continue;
+            var to = Math.Min(m.To, 24 * 60);
+            yield return new BookedSlotInfo
+            {
+                StartTime = TimeSpan.FromMinutes(m.From).ToString(@"hh\:mm"),
+                Duration = (int)(to - m.From),
+                Sport = pitch.Sport,
+                PitchId = pitch.Id,
+                PitchSize = pitch.ParentSize,
+                UnitWeight = PitchSizes.CapacityOf(pitch),
+                Blocked = true,
+            };
+        }
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 
 namespace SportsVenueApi.DTOs.Bookings;
@@ -21,6 +22,13 @@ public class VenueRef
 
     [JsonPropertyName("images")]
     public List<string> Images { get; set; } = [];
+
+    /// <summary>
+    /// The venue's free-cancellation window, so a cancel screen can say what cancelling now
+    /// does to the money before anyone presses it — and a player can read the rule.
+    /// </summary>
+    [JsonPropertyName("freeCancelHours")]
+    public int FreeCancelHours { get; set; }
 
     /// <summary>
     /// The venue's CliQ payment alias. Populated only for the venue's own side —
@@ -169,6 +177,149 @@ public class UploadProofRequest
 {
     [JsonPropertyName("paymentProof")]
     public string PaymentProof { get; set; } = "";  // base64 image
+}
+
+/// <summary>What to do with money already paid when cancelling. Absent body = the venue's rule.</summary>
+public class CancelBookingRequest
+{
+    /// <summary>"policy" (the venue's free-cancellation window), "all" or "none".</summary>
+    [JsonPropertyName("refund")]
+    public string? Refund { get; set; }
+}
+
+public class RefundRequest
+{
+    [JsonPropertyName("amount")]
+    public double Amount { get; set; }
+
+    /// <summary>"refund" (money returned) or "correction" (recorded by mistake).</summary>
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "refund";
+
+    [JsonPropertyName("note")]
+    [StringLength(255)]
+    public string? Note { get; set; }
+}
+
+/// <summary>
+/// Move or re-price a booking. Every field is optional; what is left out stays as it is.
+/// Changing the duration, pitch or size re-prices from the venue's list unless an explicit
+/// <see cref="TotalAmount"/> is given.
+/// </summary>
+public class UpdateBookingRequest
+{
+    [JsonPropertyName("date")]
+    public string? Date { get; set; }
+
+    [JsonPropertyName("startTime")]
+    public string? StartTime { get; set; }
+
+    [JsonPropertyName("duration")]
+    public int? Duration { get; set; }
+
+    [JsonPropertyName("pitchId")]
+    public string? PitchId { get; set; }
+
+    [JsonPropertyName("pitchSize")]
+    public string? PitchSize { get; set; }
+
+    /// <summary>A price agreed with the customer. Needs the permission to record payments.</summary>
+    [JsonPropertyName("totalAmount")]
+    [Range(0, 100000)]
+    public double? TotalAmount { get; set; }
+
+    [JsonPropertyName("notes")]
+    [StringLength(1000)]
+    public string? Notes { get; set; }
+}
+
+/// <summary>Everything a printed receipt shows, in one call.</summary>
+public class BookingReceipt
+{
+    /// <summary>The booking reference, upper-cased: what the customer quotes back.</summary>
+    [JsonPropertyName("receiptNumber")]
+    public string ReceiptNumber { get; set; } = "";
+
+    [JsonPropertyName("issuedAt")]
+    public DateTime IssuedAt { get; set; }
+
+    [JsonPropertyName("companyName")]
+    public string? CompanyName { get; set; }
+
+    [JsonPropertyName("companyNameAr")]
+    public string? CompanyNameAr { get; set; }
+
+    [JsonPropertyName("venueName")]
+    public string VenueName { get; set; } = "";
+
+    [JsonPropertyName("venueNameAr")]
+    public string? VenueNameAr { get; set; }
+
+    [JsonPropertyName("venueAddress")]
+    public string? VenueAddress { get; set; }
+
+    [JsonPropertyName("venueCity")]
+    public string? VenueCity { get; set; }
+
+    [JsonPropertyName("customerName")]
+    public string? CustomerName { get; set; }
+
+    [JsonPropertyName("customerPhone")]
+    public string? CustomerPhone { get; set; }
+
+    [JsonPropertyName("sport")]
+    public string Sport { get; set; } = "";
+
+    [JsonPropertyName("pitchName")]
+    public string? PitchName { get; set; }
+
+    [JsonPropertyName("pitchSize")]
+    public string? PitchSize { get; set; }
+
+    [JsonPropertyName("date")]
+    public string Date { get; set; } = "";
+
+    [JsonPropertyName("startTime")]
+    public string? StartTime { get; set; }
+
+    [JsonPropertyName("duration")]
+    public int Duration { get; set; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "";
+
+    [JsonPropertyName("totalAmount")]
+    public double TotalAmount { get; set; }
+
+    [JsonPropertyName("amountPaid")]
+    public double AmountPaid { get; set; }
+
+    /// <summary>Still owed; never negative (an overpayment shows as paid in full).</summary>
+    [JsonPropertyName("balance")]
+    public double Balance { get; set; }
+
+    [JsonPropertyName("payments")]
+    public List<ReceiptLine> Payments { get; set; } = [];
+}
+
+public class ReceiptLine
+{
+    [JsonPropertyName("date")]
+    public DateTime Date { get; set; }
+
+    /// <summary>Negative for a refund or correction.</summary>
+    [JsonPropertyName("amount")]
+    public double Amount { get; set; }
+
+    [JsonPropertyName("method")]
+    public string? Method { get; set; }
+
+    /// <summary>"deposit" | "balance" | "full" | "refund" | "correction"</summary>
+    [JsonPropertyName("kind")]
+    public string? Kind { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
 }
 
 public class ReviewProofRequest
@@ -418,4 +569,11 @@ public class BookedSlotInfo
 
     [JsonPropertyName("unitWeight")]
     public int UnitWeight { get; set; } = 1;
+
+    /// <summary>
+    /// Blocked time rather than a booking. It carries the pitch's full capacity as its weight,
+    /// so a client that only sums weights already treats it as taken.
+    /// </summary>
+    [JsonPropertyName("blocked")]
+    public bool Blocked { get; set; }
 }

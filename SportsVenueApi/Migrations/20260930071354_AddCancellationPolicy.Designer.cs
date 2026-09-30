@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SportsVenueApi.Data;
 
@@ -11,9 +12,11 @@ using SportsVenueApi.Data;
 namespace SportsVenueApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260930071354_AddCancellationPolicy")]
+    partial class AddCancellationPolicy
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1084,53 +1087,6 @@ namespace SportsVenueApi.Migrations
                     b.ToTable("venues");
                 });
 
-            modelBuilder.Entity("SportsVenueApi.Models.VenueBlock", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("id");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("CreatedByUserId")
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("created_by_user_id");
-
-                    b.Property<DateTime>("EndsAt")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("ends_at");
-
-                    b.Property<string>("PitchId")
-                        .HasMaxLength(64)
-                        .HasColumnType("varchar(64)")
-                        .HasColumnName("pitch_id");
-
-                    b.Property<string>("Reason")
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)")
-                        .HasColumnName("reason");
-
-                    b.Property<DateTime>("StartsAt")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("starts_at");
-
-                    b.Property<string>("VenueId")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("venue_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("VenueId", "StartsAt");
-
-                    b.ToTable("venue_blocks");
-                });
-
             modelBuilder.Entity("SportsVenueApi.Models.VenueFeature", b =>
                 {
                     b.Property<string>("Id")
@@ -1422,17 +1378,6 @@ namespace SportsVenueApi.Migrations
                         .IsRequired();
 
                     b.Navigation("Owner");
-                });
-
-            modelBuilder.Entity("SportsVenueApi.Models.VenueBlock", b =>
-                {
-                    b.HasOne("SportsVenueApi.Models.Venue", "Venue")
-                        .WithMany()
-                        .HasForeignKey("VenueId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Venue");
                 });
 #pragma warning restore 612, 618
         }
