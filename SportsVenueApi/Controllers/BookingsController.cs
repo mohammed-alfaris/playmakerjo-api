@@ -1316,6 +1316,14 @@ public class BookingsController : ControllerBase
 
         await _db.SaveChangesAsync();
 
+        // The player waiting on an app booking hears it is confirmed. A counter booking has
+        // no player to tell — its PlayerId is the owner's own.
+        if (!booking.IsManual)
+        {
+            try { await _notifications.NotifyBookingConfirmed(booking); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Booking-confirmed notification failed for {BookingId}", booking.Id); }
+        }
+
         return Ok(new ApiResponse<BookingResponse>
         {
             Data = ToDto(booking),
@@ -1670,6 +1678,9 @@ public class BookingsController : ControllerBase
             $"Cancelled a weekly series at {group.Venue.Name}: {toCancel.Count} session(s)" + (refunded > 0 ? $", refunded {AuditLog.Jod(refunded)}" : ""),
             $"إلغاء سلسلة أسبوعية في {group.Venue.Name}: {toCancel.Count} جلسة" + (refunded > 0 ? $"، إعادة {AuditLog.Jod(refunded)}" : ""));
         await _db.SaveChangesAsync();
+
+        try { await _notifications.NotifySeriesCancelled(group, toCancel.Count, UserId); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Series-cancelled notification failed for {GroupId}", group.Id); }
 
         return Ok(new ApiResponse<object>
         {

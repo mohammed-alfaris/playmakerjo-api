@@ -167,12 +167,7 @@ public sealed class AccessContext
 
         // A role only counts if it is this company's. A staff row with no role keeps the level
         // it had before roles existed — the backstop if a role is ever removed from under it.
-        var permissions = user.StaffRole != null && user.StaffRole.OwnerId == CompanyId
-            ? user.StaffRole.Permissions
-            : user.Permissions == "write"
-                ? StaffPermissions.LegacyWrite.ToList()
-                : StaffPermissions.LegacyRead.ToList();
-        _permissions = new HashSet<string>(permissions.Where(StaffPermissions.IsValid), StringComparer.Ordinal);
+        _permissions = StaffPermissions.For(user, CompanyId);
 
         if (!user.StaffAllVenues)
             _restrictedVenueIds = new HashSet<string>(user.StaffVenueIds, StringComparer.Ordinal);

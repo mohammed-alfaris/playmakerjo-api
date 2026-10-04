@@ -1,5 +1,6 @@
 using FirebaseAdmin.Messaging;
 using Microsoft.EntityFrameworkCore;
+using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
 using SportsVenueApi.Models;
 
@@ -139,6 +140,33 @@ public class NotificationService
     }
 
     /// <summary>
+    /// Who on the venue's side hears about something: the owner, and every active clerk of
+    /// theirs whose role includes <paramref name="permission"/> and who works at this venue.
+    /// <paramref name="except"/> — whoever did the thing — is left out; they already know.
+    /// </summary>
+    public async Task<List<string>> VenueTeam(Venue venue, string permission, string? except = null)
+    {
+        var staff = await _db.Users.AsNoTracking()
+            .Include(u => u.StaffRole)
+            .Where(u => u.Role == "venue_staff" && u.Status == "active" && u.ManagedByOwnerId == venue.OwnerId)
+            .ToListAsync();
+
+        var ids = new List<string> { venue.OwnerId };
+        ids.AddRange(staff
+            .Where(s => s.StaffAllVenues || s.StaffVenueIds.Contains(venue.Id))
+            .Where(s => StaffPermissions.For(s, venue.OwnerId).Contains(permission))
+            .Select(s => s.Id));
+        return ids.Where(id => id != except).Distinct().ToList();
+    }
+
+    private async Task NotifyVenueTeam(
+        Venue venue, string permission, string? except, string title, string body, string type, string? referenceId)
+    {
+        foreach (var userId in await VenueTeam(venue, permission, except))
+            await CreateNotification(userId, title, body, type, referenceId);
+    }
+
+    /// <summary>
     /// A player booked through the app. The owner hears about it the moment it happens — the
     /// dashboard's inbox shows it and refreshes the schedule. Counter bookings do not come
     /// here: whoever keyed one in is standing at the desk already.
@@ -148,8 +176,8 @@ public class NotificationService
         if (booking.Venue == null) return;
         var player = booking.Player?.Name ?? "A player";
         var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
-        await CreateNotification(
-            booking.Venue.OwnerId,
+        await NotifyVenueTeam(
+            booking.Venue, StaffPermissions.BookingsView, null,
             Bi("New booking", "حجز جديد"),
             Bi(
                 $"{player} booked {booking.Venue.Name} for {when}.",
@@ -202,8 +230,8 @@ public class NotificationService
         if (first.Venue == null) return;
         var player = first.Player?.Name ?? "A player";
         var when = $"{first.Date:yyyy-MM-dd} {first.StartTime}";
-        await CreateNotification(
-            first.Venue.OwnerId,
+        await NotifyVenueTeam(
+            first.Venue, StaffPermissions.BookingsView, null,
             Bi("New weekly booking", "حجز أسبوعي جديد"),
             Bi(
                 $"{player} booked {first.Venue.Name} for {sessions} sessions, starting {when}.",
@@ -295,8 +323,8 @@ public class NotificationService
         if (booking.Venue != null)
         {
             var player = booking.Player?.Name ?? "a player";
-            await CreateNotification(
-                booking.Venue.OwnerId,
+            await NotifyVenueTeam(
+                booking.Venue, StaffPermissions.PaymentsRecord, null,
                 Bi("Payment Proof Received", "تم استلام إثبات الدفع"),
                 Bi(
                     $"A payment proof has been uploaded for booking at {booking.Venue.Name} by {player}.",
@@ -349,6 +377,10 @@ public class NotificationService
         var date = booking.Date.ToString("MMM dd");
         var player = booking.Player?.Name ?? "a player";
 
+        // A counter booking's PlayerId is the owner's own id, not a player: nobody to tell,
+        // and the desk that took it is the desk that cancelled it.
+        if (booking.IsManual) return;
+
         if (cancelledByUserId != booking.PlayerId)
         {
             await CreateNotification(
@@ -363,10 +395,10 @@ public class NotificationService
             );
         }
 
-        if (booking.Venue != null && cancelledByUserId != booking.Venue.OwnerId)
+        if (booking.Venue != null)
         {
-            await CreateNotification(
-                booking.Venue.OwnerId,
+            await NotifyVenueTeam(
+                booking.Venue, StaffPermissions.BookingsView, cancelledByUserId,
                 Bi("Booking Cancelled", "تم إلغاء الحجز"),
                 Bi(
                     $"A booking at {booking.Venue.Name} by {player} on {date} has been cancelled.",
@@ -406,6 +438,110 @@ public class NotificationService
                 $"تم تسجيلك كغائب عن حجزك في {venue} بتاريخ {date}."
             ),
             "no_show",
+            booking.Id
+        );
+    }
+
+    /// <summary>
+    /// A weekly series was cancelled. The player hears unless they did it; the venue team hears
+    /// unless one of them did it. One notice for the series, not one per week.
+    /// </summary>
+    public async Task NotifySeriesCancelled(RecurringBookingGroup group, int sessions, string cancelledByUserId)
+    {
+        if (sessions == 0 || group.Venue == null) return;
+        var venue = group.Venue.Name;
+        var player = await _db.Users.Where(u => u.Id == group.PlayerId).Select(u => u.Name).FirstOrDefaultAsync() ?? "A player";
+
+        if (cancelledByUserId != group.PlayerId)
+        {
+            await CreateNotification(
+                group.PlayerId,
+                Bi("Weekly booking cancelled", "تم إلغاء الحجز الأسبوعي"),
+                Bi(
+                    $"Your weekly booking at {venue} was cancelled: {sessions} upcoming session(s).",
+                    $"تم إلغاء حجزك الأسبوعي في {venue}: {sessions} جلسة قادمة."
+                ),
+                "series_cancelled",
+                group.Id
+            );
+        }
+
+        await NotifyVenueTeam(
+            group.Venue, StaffPermissions.BookingsView, cancelledByUserId,
+            Bi("Weekly booking cancelled", "تم إلغاء الحجز الأسبوعي"),
+            Bi(
+                $"{player}'s weekly booking at {venue} was cancelled: {sessions} upcoming session(s).",
+                $"تم إلغاء الحجز الأسبوعي لـ {player} في {venue}: {sessions} جلسة قادمة."
+            ),
+            "series_cancelled",
+            group.Id
+        );
+    }
+
+    /// <summary>A player reviewed the venue. Those who follow how the venue is doing hear about it.</summary>
+    public async Task NotifyNewReview(Venue venue, string playerName, int rating)
+    {
+        await NotifyVenueTeam(
+            venue, StaffPermissions.ReportsView, null,
+            Bi("New review", "تقييم جديد"),
+            Bi(
+                $"{playerName} rated {venue.Name} {rating}/5.",
+                $"{playerName} قيّم {venue.Name} بـ {rating}/5."
+            ),
+            "new_review",
+            venue.Id
+        );
+    }
+
+    // ── Reminders (sent by the reminders job, once each) ──────────────────
+
+    /// <summary>The player's confirmed game is coming up.</summary>
+    public async Task NotifyGameReminder(Booking booking)
+    {
+        var venue = booking.Venue?.Name ?? "the venue";
+        await CreateNotification(
+            booking.PlayerId,
+            Bi("Your game is soon", "مباراتك قريبة"),
+            Bi(
+                $"Your game at {venue} starts at {booking.StartTime} on {booking.Date:yyyy-MM-dd}.",
+                $"مباراتك في {venue} تبدأ الساعة {booking.StartTime} بتاريخ {booking.Date:yyyy-MM-dd}."
+            ),
+            "game_reminder",
+            booking.Id
+        );
+    }
+
+    /// <summary>A payment proof has waited a while for someone at the venue to look at it.</summary>
+    public async Task NotifyProofWaiting(Booking booking, int minutes)
+    {
+        if (booking.Venue == null) return;
+        var player = booking.Player?.Name ?? "A player";
+        var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
+        await NotifyVenueTeam(
+            booking.Venue, StaffPermissions.PaymentsRecord, null,
+            Bi("Payment proof waiting", "إثبات دفع بانتظار المراجعة"),
+            Bi(
+                $"{player}'s payment proof for {booking.Venue.Name} on {when} has been waiting {minutes} minutes.",
+                $"إثبات دفع {player} لحجز {booking.Venue.Name} بتاريخ {when} بانتظار المراجعة منذ {minutes} دقيقة."
+            ),
+            "proof_waiting",
+            booking.Id
+        );
+    }
+
+    /// <summary>The player's unpaid booking is about to be released.</summary>
+    public async Task NotifyPaymentDeadline(Booking booking, int minutesLeft)
+    {
+        var venue = booking.Venue?.Name ?? "the venue";
+        var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
+        await CreateNotification(
+            booking.PlayerId,
+            Bi("Pay to keep your booking", "ادفع للحفاظ على حجزك"),
+            Bi(
+                $"Your booking at {venue} on {when} will be released in {minutesLeft} minutes unless you upload your payment proof.",
+                $"سيتم إلغاء حجزك في {venue} بتاريخ {when} خلال {minutesLeft} دقيقة إذا لم ترفع إثبات الدفع."
+            ),
+            "payment_deadline",
             booking.Id
         );
     }
