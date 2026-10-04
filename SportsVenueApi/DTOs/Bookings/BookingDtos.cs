@@ -112,6 +112,11 @@ public class BookingResponse
     [JsonPropertyName("depositPaid")]
     public bool DepositPaid { get; set; }
 
+    /// <summary>Money given back on this booking (refunds and corrections). Absent when none.</summary>
+    [JsonPropertyName("refundedAmount")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? RefundedAmount { get; set; }
+
     [JsonPropertyName("amountPaid")]
     public double AmountPaid { get; set; }
 

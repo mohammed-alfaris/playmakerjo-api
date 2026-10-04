@@ -110,6 +110,8 @@ public class AppDbContext : DbContext
             e.HasOne(g => g.Venue).WithMany().HasForeignKey(g => g.VenueId);
         });
 
+        modelBuilder.Entity<User>().HasIndex(u => u.AppleUserId).IsUnique();
+
         modelBuilder.Entity<AuditEvent>(e =>
         {
             // Read newest-first per company; no foreign keys, so the log outlives what it names.

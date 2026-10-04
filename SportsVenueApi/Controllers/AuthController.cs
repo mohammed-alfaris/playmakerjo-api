@@ -23,9 +23,12 @@ public class AuthController : ControllerBase
     private readonly IConfiguration _config;
     private readonly ILogger<AuthController> _logger;
     private readonly string _uploadsBaseUrl;
+    private readonly AppleIdentityValidator _apple;
 
-    public AuthController(AppDbContext db, JwtService jwt, IWebHostEnvironment env, IConfiguration config, ILogger<AuthController> logger)
+    public AuthController(AppDbContext db, JwtService jwt, IWebHostEnvironment env, IConfiguration config, ILogger<AuthController> logger,
+        AppleIdentityValidator apple)
     {
+        _apple = apple;
         _db = db;
         _jwt = jwt;
         _env = env;
@@ -150,6 +153,58 @@ public class AuthController : ControllerBase
         return Ok(IssueTokens(user));
     }
 
+    // POST /api/v1/auth/apple
+    // Sign in with Apple. Apple requires it of any iOS app that offers another social sign-in
+    // (we offer Google). Same shape as Google: find the person, or create a player whose phone
+    // is collected on the complete-profile screen.
+    [HttpPost("apple")]
+    public async Task<IActionResult> AppleSignIn([FromBody] AppleSignInRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.IdentityToken))
+            return BadRequest(new ApiResponse<object> { Success = false, Message = "identityToken is required" });
+
+        var identity = await _apple.ValidateAsync(req.IdentityToken);
+        if (identity == null)
+            return Unauthorized(new ApiResponse<object> { Success = false, Message = "Invalid Apple token" });
+
+        // Apple's own id first: the email Apple shares can be a private relay, and can change.
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.AppleUserId == identity.Subject);
+
+        // Someone who already has an account under the same (Apple-verified) email is the same
+        // person signing in a new way: link rather than create a second account.
+        if (user == null && identity.Email != null && identity.EmailVerified)
+        {
+            user = await _db.Users.FirstOrDefaultAsync(u => u.Email == identity.Email);
+            if (user != null && user.Status != "deleted") user.AppleUserId = identity.Subject;
+        }
+
+        if (user == null)
+        {
+            if (identity.Email == null)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = "Apple did not share an email address" });
+
+            var name = (req.Name ?? "").Trim();
+            user = new User
+            {
+                Name = name.Length > 0 ? name : identity.Email.Split('@')[0],
+                Email = identity.Email,
+                Phone = null,
+                PasswordHash = string.Empty,
+                Role = "player",
+                Status = "active",
+                AppleUserId = identity.Subject,
+            };
+            _db.Users.Add(user);
+            _logger.LogInformation("Apple sign-in created a player account");
+        }
+
+        if (user.Status is "banned" or "deleted")
+            return StatusCode(403, new ApiResponse<object> { Success = false, Message = "Account is not available" });
+
+        await _db.SaveChangesAsync();
+        return Ok(IssueTokens(user));
+    }
+
     [HttpPost("register")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest req)
     {
@@ -182,10 +237,23 @@ public class AuthController : ControllerBase
         return Ok(IssueTokens(user));
     }
 
+    /// <summary>
+    /// The mobile app identifies itself so it can be handed its refresh token directly. The
+    /// header is not a secret and needs not be: all it changes is where a token the caller is
+    /// entitled to anyway is delivered — the body instead of a cookie the app cannot keep.
+    /// </summary>
+    private bool IsMobileClient =>
+        string.Equals(Request.Headers["X-Client"].ToString(), "mobile", StringComparison.OrdinalIgnoreCase);
+
+    // The app used to be signed out every 15 minutes: refresh read only the cookie, and the
+    // app has no cookie jar, so every refresh failed and the access token simply ran out.
     [HttpPost("refresh")]
-    public async Task<IActionResult> Refresh()
+    [EnableRateLimiting("refresh")]
+    public async Task<IActionResult> Refresh(
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] RefreshRequest? req = null)
     {
         var token = Request.Cookies["refresh_token"];
+        if (string.IsNullOrEmpty(token)) token = req?.RefreshToken;
         if (string.IsNullOrEmpty(token))
             return Unauthorized(new ApiResponse<object> { Success = false, Message = "No refresh token" });
 
@@ -199,7 +267,7 @@ public class AuthController : ControllerBase
             return Unauthorized(new ApiResponse<object> { Success = false, Message = "Invalid token" });
 
         var user = await _db.Users.FindAsync(userId);
-        if (user == null || user.Status == "banned")
+        if (user == null || user.Status is "banned" or "deleted")
             return Unauthorized(new ApiResponse<object> { Success = false, Message = "User not found or banned" });
 
         // Refuse a token that predates the current password.
@@ -240,7 +308,15 @@ public class AuthController : ControllerBase
 
         return Ok(new ApiResponse<TokenData>
         {
-            Data = new TokenData { AccessToken = accessToken },
+            Data = new TokenData
+            {
+                AccessToken = accessToken,
+                // Rotated for the app, so a phone in regular use never reaches the end of the
+                // seven days; one left unopened for a week signs in again.
+                RefreshToken = IsMobileClient
+                    ? _jwt.CreateRefreshToken(user.Id, user.Role, user.ManagedByOwnerId, user.Permissions)
+                    : null,
+            },
             Message = "Token refreshed"
         });
     }
@@ -292,7 +368,8 @@ public class AuthController : ControllerBase
                     Permissions = user.Role == "venue_staff" ? (user.Permissions ?? "read") : null,
                     ManagedByOwnerId = user.Role == "venue_staff" ? user.ManagedByOwnerId : null
                 },
-                AccessToken = accessToken
+                AccessToken = accessToken,
+                RefreshToken = IsMobileClient ? refreshToken : null,
             },
             Message = "Login successful"
         };
