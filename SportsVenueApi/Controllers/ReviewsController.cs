@@ -8,6 +8,7 @@ using SportsVenueApi.Helpers;
 using SportsVenueApi.DTOs;
 using SportsVenueApi.DTOs.Reviews;
 using SportsVenueApi.Models;
+using SportsVenueApi.Services;
 
 namespace SportsVenueApi.Controllers;
 
@@ -17,10 +18,14 @@ namespace SportsVenueApi.Controllers;
 public class ReviewsController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly NotificationService _notifications;
+    private readonly ILogger<ReviewsController> _logger;
 
-    public ReviewsController(AppDbContext db)
+    public ReviewsController(AppDbContext db, NotificationService notifications, ILogger<ReviewsController> logger)
     {
         _db = db;
+        _notifications = notifications;
+        _logger = logger;
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub") ?? "";
@@ -156,6 +161,13 @@ public class ReviewsController : ControllerBase
             .Include(r => r.Player)
             .AsSplitQuery()
             .FirstAsync(r => r.Id == review.Id);
+
+        try
+        {
+            var venue = await _db.Venues.AsNoTracking().FirstAsync(v => v.Id == req.VenueId);
+            await _notifications.NotifyNewReview(venue, created.Player?.Name ?? "A player", created.Rating);
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "New-review notification failed for {ReviewId}", review.Id); }
 
         return Ok(new ApiResponse<ReviewResponse> { Data = ToDto(created), Message = "Review posted" });
     }

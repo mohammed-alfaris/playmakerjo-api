@@ -58,6 +58,9 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         // would throw when another factory in the same process already created the
         // default app. The empty value falls through to the try/catch-wrapped branch.
         builder.UseSetting("Firebase:CredentialFile", "");
+        // Tests drive the reminders by calling BookingReminders.RunAsync with a chosen clock;
+        // a live job would add notifications to whatever another test is counting.
+        builder.UseSetting("Jobs:Reminders:Enabled", "false");
         // High limits so the per-user uploads/booking-create limiters never
         // reject regular suite traffic.
         builder.UseSetting("RateLimiting:Uploads:PermitLimit", "100000");

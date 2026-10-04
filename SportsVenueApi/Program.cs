@@ -94,6 +94,18 @@ builder.Services.AddSingleton(new ExpiryPolicy(
 
 builder.Services.AddScoped<UnpaidBookingSweep>();
 
+// ── Reminders: game coming up, proof waiting, unpaid booking about to go ────────────
+builder.Services.Configure<ReminderOptions>(builder.Configuration.GetSection(ReminderOptions.Section));
+builder.Services.AddScoped<BookingReminders>();
+// Off unless configured, like the expiry job below and for the same reason: a bare test host
+// or a laptop must never start sending people reminders. Production turns it on in compose.
+if (builder.Configuration.GetSection(ReminderOptions.Section).Get<ReminderOptions>()?.Enabled == true)
+{
+    builder.Services.AddHostedService<ReminderService>();
+    builder.Services.Configure<HostOptions>(o =>
+        o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
+}
+
 if (expiryOptions.Enabled)
 {
     builder.Services.AddHostedService<BookingExpiryService>();

@@ -106,6 +106,13 @@ public class NotificationsController : ControllerBase
         if (string.IsNullOrEmpty(req.Token))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Token is required" });
 
+        // A phone belongs to whoever is signed in on it now. Someone else who used this phone
+        // before stops getting its notifications — a shared or handed-down phone used to keep
+        // showing the previous person's bookings.
+        await _db.DeviceTokens
+            .Where(d => d.Token == req.Token && d.UserId != UserId && d.IsActive)
+            .ExecuteUpdateAsync(d => d.SetProperty(x => x.IsActive, false));
+
         // Upsert: update existing or create new
         var existing = await _db.DeviceTokens
             .FirstOrDefaultAsync(d => d.UserId == UserId && d.Token == req.Token);

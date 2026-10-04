@@ -55,6 +55,22 @@ public static class StaffPermissions
         BookingsView, PaymentsView, CustomersView, CustomersExport, StandingView,
     ];
 
+    /// <summary>
+    /// What a staff member may do for <paramref name="companyId"/>: their role's permissions if
+    /// the role is that company's, otherwise the level they had before roles existed. The one
+    /// place this is decided — access checks and notifications must agree on who can do what.
+    /// <paramref name="staff"/> needs its StaffRole loaded.
+    /// </summary>
+    public static HashSet<string> For(Models.User staff, string companyId)
+    {
+        var permissions = staff.StaffRole != null && staff.StaffRole.OwnerId == companyId
+            ? staff.StaffRole.Permissions
+            : staff.Permissions == "write"
+                ? LegacyWrite.ToList()
+                : LegacyRead.ToList();
+        return new HashSet<string>(permissions.Where(IsValid), StringComparer.Ordinal);
+    }
+
     public const string LegacyWriteRoleName = "Front desk";
     public const string LegacyReadRoleName = "View only";
 }
