@@ -352,6 +352,24 @@ if (args.Contains("--seed-demo-owner"))
     return;
 }
 
+// Demo billing companies (one overdue, one with months of bookings to invoice), and their
+// removal. Additive and reversible; see DemoBillingSeed.
+if (args.Contains("--seed-demo-billing") || args.Contains("--remove-demo-billing"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+
+    if (args.Contains("--remove-demo-billing"))
+        Console.WriteLine(await SportsVenueApi.Data.DemoBillingSeed.RemoveAsync(db));
+    else
+    {
+        var fee = await db.PlatformSettings.Select(s => (double?)s.PlatformFeePercentage).FirstOrDefaultAsync() ?? 5.0;
+        Console.WriteLine(await SportsVenueApi.Data.DemoBillingSeed.RunAsync(db, fee));
+    }
+    return;
+}
+
 // Auto-apply pending migrations on startup
 using (var scope = app.Services.CreateScope())
 {
