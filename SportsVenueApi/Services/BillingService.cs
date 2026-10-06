@@ -48,10 +48,11 @@ public sealed class BillingService
         : c.TrialEndsOn is { } end && end.Date >= today ? "trial"
         : "active";
 
-    public async Task<(double First, double Extra)> PricesForAsync(Company c)
+    /// <summary>What a venue costs this company a month: small or large by pitch count.</summary>
+    public async Task<(double Small, double Large, int LargeFrom)> PricesForAsync(Company c)
     {
         var s = await _settings.GetAsync();
-        return (c.PriceFirstVenue ?? s.PriceFirstVenue, c.PriceExtraVenue ?? s.PriceExtraVenue);
+        return (c.PriceSmallVenue ?? s.PriceSmallVenue, c.PriceLargeVenue ?? s.PriceLargeVenue, Math.Max(1, s.LargeVenueMinPitches));
     }
 
     /// <summary>Issued invoices past their due date.</summary>
@@ -113,30 +114,39 @@ public sealed class BillingService
             // Subscription, unless the trial reaches into this month or an annual payment covers it.
             if (!inTrial && !await CoveredAsync(owner.Id, monthStart))
             {
-                var venues = await _db.Venues.CountAsync(v => v.OwnerId == owner.Id && v.Status == "active");
-                if (venues > 0)
+                // Each active venue is priced on its own by its pitch count: small (under
+                // LargeVenueMinPitches pitches) or large.
+                var activeVenues = await _db.Venues.Where(v => v.OwnerId == owner.Id && v.Status == "active").ToListAsync();
+                if (activeVenues.Count > 0)
                 {
-                    var (first, extra) = (company.PriceFirstVenue ?? settings.PriceFirstVenue,
-                                          company.PriceExtraVenue ?? settings.PriceExtraVenue);
+                    var small = company.PriceSmallVenue ?? settings.PriceSmallVenue;
+                    var large = company.PriceLargeVenue ?? settings.PriceLargeVenue;
+                    var largeFrom = Math.Max(1, settings.LargeVenueMinPitches);
+                    var largeCount = activeVenues.Count(v => PitchSizes.ResolvedPitches(v).Count >= largeFrom);
+                    var smallCount = activeVenues.Count - largeCount;
+
                     var annual = company.BillingCycle == Annual;
                     var months = annual ? 10 : 1;          // twelve months for the price of ten
                     var coversTo = annual ? monthStart.AddMonths(12) : monthEnd;
                     var label = annual ? $"Annual subscription ({period} for 12 months, 10 paid)" : $"Monthly subscription ({period})";
                     var labelAr = annual ? $"اشتراك سنوي ({period} لمدة ١٢ شهر، مدفوع ١٠)" : $"الاشتراك الشهري ({period})";
 
-                    lines.Add(new InvoiceLine
-                    {
-                        Kind = "subscription", Description = $"{label}: first venue", DescriptionAr = $"{labelAr}: الملعب الأول",
-                        Quantity = months, UnitPrice = first, Amount = R(months * first),
-                        CoversFrom = monthStart, CoversTo = coversTo,
-                    });
-                    if (venues > 1)
+                    if (smallCount > 0)
                         lines.Add(new InvoiceLine
                         {
-                            Kind = "extra_venues",
-                            Description = $"{label}: {venues - 1} additional venue(s)",
-                            DescriptionAr = $"{labelAr}: {venues - 1} ملعب إضافي",
-                            Quantity = months * (venues - 1), UnitPrice = extra, Amount = R(months * (venues - 1) * extra),
+                            Kind = "subscription",
+                            Description = $"{label}: {smallCount} venue(s) with up to {largeFrom - 1} pitch(es)",
+                            DescriptionAr = $"{labelAr}: {smallCount} منشأة حتى {largeFrom - 1} ملعب",
+                            Quantity = months * smallCount, UnitPrice = small, Amount = R(months * smallCount * small),
+                            CoversFrom = monthStart, CoversTo = coversTo,
+                        });
+                    if (largeCount > 0)
+                        lines.Add(new InvoiceLine
+                        {
+                            Kind = "subscription",
+                            Description = $"{label}: {largeCount} venue(s) with {largeFrom}+ pitches",
+                            DescriptionAr = $"{labelAr}: {largeCount} منشأة من {largeFrom} ملاعب فأكثر",
+                            Quantity = months * largeCount, UnitPrice = large, Amount = R(months * largeCount * large),
                             CoversFrom = monthStart, CoversTo = coversTo,
                         });
 

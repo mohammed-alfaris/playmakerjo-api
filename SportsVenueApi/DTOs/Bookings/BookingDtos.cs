@@ -157,6 +157,11 @@ public class BookingResponse
     [JsonPropertyName("isManual")]
     public bool IsManual { get; set; }
 
+    /// <summary>"web" for a booking made on the venue's public link; null otherwise.</summary>
+    [JsonPropertyName("source")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Source { get; set; }
+
     /// <summary>
     /// When this unpaid hold is released, if it is one. Null on everything else — counter
     /// bookings, recurring series, anything already paid or awaiting proof review.

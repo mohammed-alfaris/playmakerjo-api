@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using SportsVenueApi.Helpers;
 using SportsVenueApi.Models;
 
 namespace SportsVenueApi.Data;
@@ -121,6 +122,10 @@ public static class SeedData
         venues[7].Images = ["https://picsum.photos/seed/v8a/800/400", "https://picsum.photos/seed/v8b/800/400"];
         venues[7].CliqAlias = "madabaaqua@cliq";
         venues[7].OperatingHoursJson = defaultHours;
+
+        // Booking links read like the venue ("al-ameen-football-arena"), as an owner would set them.
+        foreach (var v in venues)
+            v.Slug = VenueSlug.Normalize(v.Name).Slug ?? v.Id;
 
         db.Venues.AddRange(venues);
         await db.SaveChangesAsync();

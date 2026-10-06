@@ -111,6 +111,10 @@ public class VenueResponse
     [JsonPropertyName("status")]
     public string Status { get; set; } = "";
 
+    /// <summary>The public booking link's last part: playmakerjo.com/v/{slug}.</summary>
+    [JsonPropertyName("slug")]
+    public string? Slug { get; set; }
+
     [JsonPropertyName("description")]
     public string? Description { get; set; }
 
@@ -209,6 +213,9 @@ public class VenueCreateRequest
     [JsonPropertyName("status")]
     public string Status { get; set; } = "pending";
 
+    [JsonPropertyName("slug")]
+    public string? Slug { get; set; }
+
     [JsonPropertyName("description")]
     public string? Description { get; set; }
 
@@ -298,6 +305,9 @@ public class VenueUpdateRequest
 
     [JsonPropertyName("status")]
     public string? Status { get; set; }
+
+    [JsonPropertyName("slug")]
+    public string? Slug { get; set; }
 
     [JsonPropertyName("description")]
     public string? Description { get; set; }

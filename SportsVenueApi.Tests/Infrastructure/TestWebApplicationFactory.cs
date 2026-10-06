@@ -72,6 +72,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         // (see RateLimiting/) rather than by accident, everywhere, in run order.
         builder.UseSetting("RateLimiting:Auth:PermitLimit", "100000");
         builder.UseSetting("RateLimiting:Refresh:PermitLimit", "100000");
+        builder.UseSetting("RateLimiting:WebRequest:PermitLimit", "100000");
+        builder.UseSetting("RateLimiting:WebPublic:PermitLimit", "100000");
         // Sign in with Apple checks tokens against Apple's published keys; tests sign with a
         // local key instead, so nothing ever calls Apple.
         builder.ConfigureServices(services =>

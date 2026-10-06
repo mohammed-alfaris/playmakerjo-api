@@ -39,7 +39,7 @@ public class ReportsService
         DateTime Date, string? StartTime, int Duration, string Status,
         double TotalAmount, double AmountPaid, double SystemFee, bool IsManual,
         string? PermanentBookingId, string? RecurringGroupId, DateTime CreatedAt,
-        DateTime? AutoCancelledAt, string? CustomerId, string PlayerId);
+        DateTime? AutoCancelledAt, string? CustomerId, string PlayerId, string? Source);
 
     private sealed record PaymentRow(
         double Amount, string? Method, string Kind, DateTime Date,
@@ -63,7 +63,7 @@ public class ReportsService
                 b.Date, b.StartTime, b.Duration, b.Status,
                 b.TotalAmount, b.AmountPaid, b.SystemFee, b.IsManual,
                 b.PermanentBookingId, b.RecurringGroupId, b.CreatedAt,
-                b.AutoCancelledAt, b.CustomerId, b.PlayerId))
+                b.AutoCancelledAt, b.CustomerId, b.PlayerId, b.Source))
             .ToListAsync();
     }
 
@@ -108,13 +108,14 @@ public class ReportsService
     /// Where a booking came from. A recorded standing week and a series occurrence are
     /// checked first: they are "manual" or "app" too, but that is not the story they tell.
     /// </summary>
-    public static string Channel(bool isManual, string? permanentBookingId, string? recurringGroupId) =>
+    public static string Channel(bool isManual, string? permanentBookingId, string? recurringGroupId, string? source = null) =>
         permanentBookingId != null ? "weekly"
         : recurringGroupId != null ? "series"
+        : source == Booking.WebSource ? "web"
         : isManual ? "counter"
         : "app";
 
-    private static string Channel(BookingRow b) => Channel(b.IsManual, b.PermanentBookingId, b.RecurringGroupId);
+    private static string Channel(BookingRow b) => Channel(b.IsManual, b.PermanentBookingId, b.RecurringGroupId, b.Source);
 
     /// <summary>Days between booking and playing, in Amman days.</summary>
     public static string LeadBucket(DateTime playDate, DateTime createdAtUtc)
@@ -295,13 +296,14 @@ public class ReportsService
                 day.Count(b => Channel(b) == "counter"),
                 day.Count(b => Channel(b) == "weekly"),
                 day.Count(b => Channel(b) == "series"),
-                cancelledByDay[d].Count());
+                cancelledByDay[d].Count(),
+                day.Count(b => Channel(b) == "web"));
         }).ToList();
 
         // Lead time only means something for bookings someone made on purpose: a recorded
         // standing week or a series occurrence is created on a schedule, not by a customer.
         var leadOrder = new[] { "same_day", "1_2_days", "3_7_days", "8_plus_days" };
-        var lead = live.Where(b => Channel(b) is "app" or "counter")
+        var lead = live.Where(b => Channel(b) is "app" or "counter" or "web")
             .GroupBy(b => LeadBucket(b.Date, b.CreatedAt))
             .ToDictionary(g => g.Key, g => g.Count());
         var leadTime = leadOrder.Select(k => new KeyCount(k, lead.GetValueOrDefault(k))).ToList();

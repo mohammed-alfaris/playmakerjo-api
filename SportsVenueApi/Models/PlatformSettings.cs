@@ -49,6 +49,21 @@ public class PlatformSettings
     [Column("price_extra_venue")]
     public double PriceExtraVenue { get; set; } = 15;
 
+    /// <summary>
+    /// Monthly price of a venue with fewer than <see cref="LargeVenueMinPitches"/> pitches.
+    /// Each venue is priced on its own by its pitch count. Replaces first/extra venue pricing,
+    /// whose columns stay only for the invoices already drawn on them.
+    /// </summary>
+    [Column("price_small_venue")]
+    public double PriceSmallVenue { get; set; } = 50;
+
+    /// <summary>Monthly price of a venue with <see cref="LargeVenueMinPitches"/> pitches or more.</summary>
+    [Column("price_large_venue")]
+    public double PriceLargeVenue { get; set; } = 75;
+
+    [Column("large_venue_min_pitches")]
+    public int LargeVenueMinPitches { get; set; } = 3;
+
     [Column("setup_fee")]
     public double SetupFee { get; set; } = 100;
 

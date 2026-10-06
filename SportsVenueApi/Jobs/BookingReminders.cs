@@ -123,6 +123,7 @@ public class BookingReminders
             var booking = await _db.Bookings
                 .Include(b => b.Venue)
                 .Include(b => b.Player)
+                .Include(b => b.Customer)
                 .AsSplitQuery()
                 .FirstOrDefaultAsync(b => b.Id == w.Id, ct);
             if (booking == null) continue;

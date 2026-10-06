@@ -18,7 +18,7 @@ namespace SportsVenueApi.Controllers;
 [ApiController]
 [Route("api/v1/bookings")]
 [Authorize]
-public class BookingsController : ControllerBase
+public partial class BookingsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly NotificationService _notifications;
@@ -1240,7 +1240,9 @@ public class BookingsController : ControllerBase
             // has no updated_at — so "how long has it been waiting" is not answerable from
             // the row. Re-stamping makes it answerable, and gives the customer a fresh,
             // full window to re-upload instead of a deadline that expired hours ago.
-            booking.PaymentDeadlineAt = booking.IsManual
+            // A web guest is waiting on a payment like an app player is, so they get the same
+            // fresh window; a counter booking is never armed.
+            booking.PaymentDeadlineAt = booking.IsManual && !booking.IsWeb
                 ? null
                 : PaymentDeadline.Compute(DateTime.UtcNow, booking.Date, booking.StartTime, _expiry);
         }
@@ -1296,23 +1298,30 @@ public class BookingsController : ControllerBase
         if (booking.Status != "pending" && booking.Status != "pending_payment")
             return BadRequest(new ApiResponse<object> { Success = false, Message = $"Cannot confirm a booking with status '{booking.Status}'" });
 
+        // A web REQUEST (the guest chose to pay at the venue) being accepted is the venue saying
+        // "yes, come" — no money has moved, so nothing is recorded.
+        var acceptingWebRequest = booking.IsWeb && booking.Status == "pending";
+
         booking.Status = "confirmed";
         booking.PaymentDeadlineAt = null;
 
-        // Confirming a booking that was waiting on money IS the owner stating the deposit
-        // arrived — that is the only thing this flag has ever meant. The line this replaces
-        // set DepositPaid = true and left AmountPaid at zero, so the row claimed to be paid
-        // and to have received nothing at the same time, and the customer's balance owed
-        // was overstated by the deposit on every booking confirmed this way.
-        var receipt = PaymentLedger.Settle(
-            booking, booking.DepositAmount, "deposit", UserId, "Confirmed by the venue");
+        if (!acceptingWebRequest)
+        {
+            // Confirming a booking that was waiting on money IS the owner stating the deposit
+            // arrived — that is the only thing this flag has ever meant. The line this replaces
+            // set DepositPaid = true and left AmountPaid at zero, so the row claimed to be paid
+            // and to have received nothing at the same time, and the customer's balance owed
+            // was overstated by the deposit on every booking confirmed this way.
+            var receipt = PaymentLedger.Settle(
+                booking, booking.DepositAmount, "deposit", UserId, "Confirmed by the venue");
 
-        if (receipt != null)
-            _db.Payments.Add(receipt);
-        else
-            // A venue configured with no deposit has nothing to receive at this point, so
-            // there is no payment to record — but the flag is still vacuously true.
-            booking.DepositPaid = true;
+            if (receipt != null)
+                _db.Payments.Add(receipt);
+            else
+                // A venue configured with no deposit has nothing to receive at this point, so
+                // there is no payment to record — but the flag is still vacuously true.
+                booking.DepositPaid = true;
+        }
 
         await _db.SaveChangesAsync();
 
@@ -1794,6 +1803,7 @@ public class BookingsController : ControllerBase
             RecurringGroupId = b.RecurringGroupId,
             Status = b.Status,
             IsManual = b.IsManual,
+            Source = b.Source,
             // Resolved from the pitch: the venue-level ParentSize is the FOOTBALL size, so
             // falling back to it unconditionally stamped a padel booking with "7" and the
             // timeline drew "7v7" on a padel court.

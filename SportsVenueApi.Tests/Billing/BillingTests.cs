@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using SportsVenueApi.Constants;
 using SportsVenueApi.Data;
 using SportsVenueApi.DTOs;
+using SportsVenueApi.DTOs.Venues;
 using SportsVenueApi.DTOs.Billing;
 using SportsVenueApi.DTOs.Companies;
 using SportsVenueApi.Models;
@@ -80,21 +81,37 @@ public class BillingTests
     }
 
     [Fact]
-    public async Task AMonth_BillsTheFirstVenue_EachExtraVenue_AndTheSetupFeeOnce()
+    public async Task AMonth_BillsEachVenueAtTheSmallPrice_AndTheSetupFeeOnce()
     {
-        var owner = await Company(venues: 3);
+        var owner = await Company(venues: 3);   // one pitch each: small venues
 
         var first = Assert.Single((await Generate(owner, NextMonth)).Created);
-        Assert.Equal(new[] { ("subscription", 30.0), ("extra_venues", 30.0), ("setup_fee", 100.0) },
+        Assert.Equal(new[] { ("subscription", 150.0), ("setup_fee", 100.0) },
             first.Lines.Select(l => (l.Kind, l.Amount)).ToArray());
-        Assert.Equal(160, first.Total, 3);
+        Assert.Equal(250, first.Total, 3);
         Assert.Equal("draft", first.Status);
         Assert.Null(first.Number);
 
         // A month later there is no second setup fee.
         var second = Assert.Single((await Generate(owner, P(ThisMonth.AddMonths(2)))).Created);
         Assert.DoesNotContain(second.Lines, l => l.Kind == "setup_fee");
-        Assert.Equal(60, second.Total, 3);
+        Assert.Equal(150, second.Total, 3);
+    }
+
+    [Fact]
+    public async Task AVenueWithThreePitchesOrMore_IsBilledAtTheLargePrice()
+    {
+        var owner = await Company(venues: 1, billing: new { setupFeeWaived = true });
+        await _fx.CreateBasketballVenue(owner.Id, v => v.Pitches =
+        [
+            new PitchDto { Id = "p-a-" + Guid.NewGuid().ToString("N")[..6], Name = "A", Sport = "basketball", PricePerHour = 20 },
+            new PitchDto { Id = "p-b-" + Guid.NewGuid().ToString("N")[..6], Name = "B", Sport = "basketball", PricePerHour = 20 },
+            new PitchDto { Id = "p-c-" + Guid.NewGuid().ToString("N")[..6], Name = "C", Sport = "basketball", PricePerHour = 20 },
+        ]);
+
+        var invoice = Assert.Single((await Generate(owner, NextMonth)).Created);
+        Assert.Equal(new[] { ("subscription", 50.0), ("subscription", 75.0) }, invoice.Lines.Select(l => (l.Kind, l.Amount)).ToArray());
+        Assert.Equal(125, invoice.Total, 3);
     }
 
     [Fact]
@@ -116,14 +133,14 @@ public class BillingTests
     [Fact]
     public async Task ACompanysOwnPrices_AndAWaivedSetupFee_AreUsed()
     {
-        var owner = await Company(venues: 2, billing: new { prices = new { firstVenue = 20, extraVenue = 10 }, setupFeeWaived = true });
+        var owner = await Company(venues: 2, billing: new { prices = new { smallVenue = 20, largeVenue = 10 }, setupFeeWaived = true });
 
         var invoice = Assert.Single((await Generate(owner, NextMonth)).Created);
 
-        Assert.Equal(new[] { ("subscription", 20.0), ("extra_venues", 10.0) }, invoice.Lines.Select(l => (l.Kind, l.Amount)).ToArray());
+        Assert.Equal(new[] { ("subscription", 40.0) }, invoice.Lines.Select(l => (l.Kind, l.Amount)).ToArray());
         var billing = (await CompanyOf(owner)).Billing;
         Assert.True(billing.CustomPrices);
-        Assert.Equal((20.0, 10.0), (billing.PriceFirstVenue, billing.PriceExtraVenue));
+        Assert.Equal((20.0, 10.0), (billing.PriceSmallVenue, billing.PriceLargeVenue));
     }
 
     [Fact]
@@ -132,7 +149,7 @@ public class BillingTests
         var owner = await Company(billing: new { cycle = "annual" });
 
         var annual = Assert.Single((await Generate(owner, NextMonth)).Created);
-        Assert.Equal(("subscription", 300.0), (Assert.Single(annual.Lines).Kind, annual.Total));
+        Assert.Equal(("subscription", 500.0), (Assert.Single(annual.Lines).Kind, annual.Total));
 
         var covered = await Generate(owner, P(ThisMonth.AddMonths(5)));
         Assert.Equal("nothing_to_bill", Assert.Single(covered.Skipped).Reason);
@@ -196,7 +213,7 @@ public class BillingTests
         var draft = Assert.Single((await Generate(owner, NextMonth)).Created);
 
         var res = await _admin.PostAsJsonAsync($"/api/v1/invoices/{draft.Id}/lines", new { description = "Launch discount", amount = -10 });
-        Assert.Equal(20, (await res.Content.ReadFromJsonAsync<ApiResponse<InvoiceResponse>>())!.Data!.Total, 3);
+        Assert.Equal(40, (await res.Content.ReadFromJsonAsync<ApiResponse<InvoiceResponse>>())!.Data!.Total, 3);
         Assert.Equal(HttpStatusCode.BadRequest,
             (await _admin.PostAsJsonAsync($"/api/v1/invoices/{draft.Id}/lines", new { description = "Too much", amount = -50 })).StatusCode);
 
@@ -220,7 +237,7 @@ public class BillingTests
         }
 
         var billing = (await CompanyOf(owner)).Billing;
-        Assert.Equal((1, 30.0), (billing.OverdueCount, billing.OverdueAmount));
+        Assert.Equal((1, 50.0), (billing.OverdueCount, billing.OverdueAmount));
         // The owner's own view carries it too — that is what the banner reads.
         var mine = (await (await _fx.CreateClientFor(owner.Id, "venue_owner").GetAsync("/api/v1/companies/me"))
             .Content.ReadFromJsonAsync<ApiResponse<CompanyResponse>>())!.Data!;
@@ -254,12 +271,13 @@ public class BillingTests
     {
         var res = await _admin.GetAsync("/api/v1/settings");
         var body = await res.Content.ReadAsStringAsync();
-        Assert.Contains("\"priceFirstVenue\":30", body);
-        Assert.Contains("\"priceExtraVenue\":15", body);
+        Assert.Contains("\"priceSmallVenue\":50", body);
+        Assert.Contains("\"priceLargeVenue\":75", body);
+        Assert.Contains("\"largeVenueMinPitches\":3", body);
 
         Assert.Equal(HttpStatusCode.BadRequest, (await _admin.PatchAsJsonAsync("/api/v1/settings", new
         {
-            billing = new { priceFirstVenue = -1, priceExtraVenue = 15, setupFee = 100, trialDays = 30, paymentTermsDays = 14 },
+            billing = new { priceSmallVenue = -1, priceLargeVenue = 75, largeVenueMinPitches = 3, setupFee = 100, trialDays = 30, paymentTermsDays = 14 },
         })).StatusCode);
     }
 }

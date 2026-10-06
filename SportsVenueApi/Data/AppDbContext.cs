@@ -111,6 +111,8 @@ public class AppDbContext : DbContext
         });
 
         modelBuilder.Entity<User>().HasIndex(u => u.AppleUserId).IsUnique();
+        modelBuilder.Entity<Venue>().HasIndex(v => v.Slug).IsUnique();
+        modelBuilder.Entity<Booking>().HasIndex(b => b.PublicToken).IsUnique();
 
         modelBuilder.Entity<AuditEvent>(e =>
         {

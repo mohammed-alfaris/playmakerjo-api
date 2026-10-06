@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using SportsVenueApi.Data;
 using SportsVenueApi.Helpers;
+using SportsVenueApi.Models;
 using SportsVenueApi.Services;
 
 namespace SportsVenueApi.Jobs;
@@ -58,8 +59,10 @@ public class UnpaidBookingSweep
                 // The arming flag. Everything else is belt and braces.
                 b.PaymentDeadlineAt != null
                 && b.PaymentDeadlineAt <= nowUtc
-                && b.Status == "pending_payment"
-                && !b.IsManual
+                // An app booking waiting on payment, or a web booking waiting on the guest's
+                // deposit or on the venue's answer to a request.
+                && ((b.Status == "pending_payment" && !b.IsManual)
+                    || (b.Source == Booking.WebSource && (b.Status == "pending" || b.Status == "pending_payment")))
                 && b.RecurringGroupId == null
                 // Money having arrived should already have disarmed the row; if some future
                 // path forgets to, refuse to cancel a booking that has been paid for.
@@ -91,8 +94,8 @@ public class UnpaidBookingSweep
                 candidates.Contains(b.Id)
                 && b.PaymentDeadlineAt != null
                 && b.PaymentDeadlineAt <= nowUtc
-                && b.Status == "pending_payment"
-                && !b.IsManual
+                && ((b.Status == "pending_payment" && !b.IsManual)
+                    || (b.Source == Booking.WebSource && (b.Status == "pending" || b.Status == "pending_payment")))
                 && b.RecurringGroupId == null
                 && b.AmountPaid <= PaymentLedger.Epsilon)
             .ExecuteUpdateAsync(s => s

@@ -86,6 +86,7 @@ public class VenuesController : ControllerBase
         AddressAr = v.AddressAr,
         PricePerHour = v.PricePerHour,
         Status = v.Status,
+        Slug = v.Slug,
         Description = v.Description,
         DescriptionAr = v.DescriptionAr,
         Images = v.Images?.Select(x => UploadUrlHelper.Normalize(x, _uploadsBaseUrl)).ToList()!,
@@ -583,6 +584,19 @@ public class VenuesController : ControllerBase
             FeatureIds = chosen.FeatureIds,
             CustomFeatures = chosen.CustomFeatures
         };
+        // The public booking link: the owner's choice, or the venue's id until they pick one.
+        if (!string.IsNullOrWhiteSpace(req.Slug))
+        {
+            var (slug, slugError) = VenueSlug.Normalize(req.Slug);
+            if (slugError != null)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = slugError });
+            if (await _db.Venues.AnyAsync(v => v.Slug == slug))
+                return Conflict(new ApiResponse<object> { Success = false, Message = "That booking link is taken" });
+            venue.Slug = slug;
+        }
+        else
+            venue.Slug = await _db.Venues.AnyAsync(v => v.Slug == venue.Id) ? $"v-{venue.Id}" : venue.Id;
+
         if (req.OperatingHours != null)
             venue.OperatingHoursJson = JsonSerializer.Serialize(req.OperatingHours);
         if (req.MinBookingDuration.HasValue)
@@ -684,6 +698,15 @@ public class VenuesController : ControllerBase
         if (req.Latitude.HasValue) venue.Latitude = req.Latitude;
         if (req.Longitude.HasValue) venue.Longitude = req.Longitude;
         if (req.CliqAlias != null) venue.CliqAlias = req.CliqAlias;
+        if (req.Slug != null)
+        {
+            var (slug, slugError) = VenueSlug.Normalize(req.Slug);
+            if (slugError != null)
+                return BadRequest(new ApiResponse<object> { Success = false, Message = slugError });
+            if (await _db.Venues.AnyAsync(v => v.Slug == slug && v.Id != venue.Id))
+                return Conflict(new ApiResponse<object> { Success = false, Message = "That booking link is taken" });
+            venue.Slug = slug;
+        }
         if (req.OperatingHours != null) venue.OperatingHoursJson = JsonSerializer.Serialize(req.OperatingHours);
         if (req.MinBookingDuration.HasValue) venue.MinBookingDuration = req.MinBookingDuration.Value;
         if (req.MaxBookingDuration.HasValue) venue.MaxBookingDuration = req.MaxBookingDuration.Value;

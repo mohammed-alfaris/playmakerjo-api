@@ -59,6 +59,14 @@ public class Company
     [Column("price_extra_venue")]
     public double? PriceExtraVenue { get; set; }
 
+    /// <summary>This company's price for a small venue. Null = the platform default.</summary>
+    [Column("price_small_venue")]
+    public double? PriceSmallVenue { get; set; }
+
+    /// <summary>This company's price for a large venue. Null = the platform default.</summary>
+    [Column("price_large_venue")]
+    public double? PriceLargeVenue { get; set; }
+
     /// <summary>No setup fee for this company (it is never charged on an annual plan either).</summary>
     [Column("setup_fee_waived")]
     public bool SetupFeeWaived { get; set; }
