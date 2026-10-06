@@ -324,7 +324,7 @@ public partial class BookingsController
             Date = b.Date.ToString("yyyy-MM-dd"), StartTime = b.StartTime, Duration = b.Duration,
             Total = Math.Round(b.TotalAmount, 3), Deposit = Math.Round(b.DepositAmount, 3), Paid = Math.Round(b.AmountPaid, 3),
             CliqAlias = awaitingPayment ? b.Venue.CliqAlias : null,
-            Deadline = b.PaymentDeadlineAt,
+            Deadline = b.PaymentDeadlineAt?.ToString("yyyy-MM-ddTHH:mm:ssZ"),
             ProofNote = awaitingPayment && b.PaymentProofStatus == "rejected" ? b.PaymentProofNote : null,
             CanPayNow = b.Status == "pending" && CanTakeDeposit(b.Venue),
             CanCancel = GuestMayCancel(b),

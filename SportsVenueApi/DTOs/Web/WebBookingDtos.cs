@@ -75,7 +75,8 @@ public class WebBookingStatus
     [JsonPropertyName("paid")] public double Paid { get; set; }
     /// <summary>Only while the guest is due to pay: where to send the deposit.</summary>
     [JsonPropertyName("cliqAlias")] public string? CliqAlias { get; set; }
-    [JsonPropertyName("deadline")] public DateTime? Deadline { get; set; }
+    /// <summary>UTC, written with its "Z" like every booking time the API sends.</summary>
+    [JsonPropertyName("deadline")] public string? Deadline { get; set; }
     /// <summary>Why the venue rejected the last proof, when it did.</summary>
     [JsonPropertyName("proofNote")] public string? ProofNote { get; set; }
     [JsonPropertyName("canPayNow")] public bool CanPayNow { get; set; }
