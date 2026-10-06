@@ -91,7 +91,8 @@ public sealed record BookingsDay(
     [property: JsonPropertyName("counter")] int Counter,
     [property: JsonPropertyName("weekly")] int Weekly,
     [property: JsonPropertyName("series")] int Series,
-    [property: JsonPropertyName("cancelled")] int Cancelled);
+    [property: JsonPropertyName("cancelled")] int Cancelled,
+    [property: JsonPropertyName("web")] int Web);
 
 public sealed record BookingsReport(
     [property: JsonPropertyName("period")] PeriodInfo Period,

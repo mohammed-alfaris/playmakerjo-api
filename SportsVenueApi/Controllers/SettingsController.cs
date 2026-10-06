@@ -63,7 +63,7 @@ public class SettingsController : ControllerBase
         if (req.DefaultLimits is { } limits && (limits.MaxVenues < 0 || limits.MaxStaff < 0))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Limits cannot be negative." });
 
-        if (req.Billing is { } b && (b.PriceFirstVenue < 0 || b.PriceExtraVenue < 0 || b.SetupFee < 0
+        if (req.Billing is { } b && (b.PriceSmallVenue < 0 || b.PriceLargeVenue < 0 || b.LargeVenueMinPitches < 1 || b.SetupFee < 0
                 || b.TrialDays is < 0 or > 365 || b.PaymentTermsDays is < 0 or > 120))
             return BadRequest(new ApiResponse<object> { Success = false, Message = "Billing defaults are out of range." });
 
@@ -79,8 +79,8 @@ public class SettingsController : ControllerBase
         if (req.PlatformFeePercentage is { } newFee) parts.Add(($"commission {newFee}%", $"العمولة {newFee}%"));
         if (req.MaintenanceMode is { } mm) parts.Add((mm ? "maintenance on" : "maintenance off", mm ? "تفعيل الصيانة" : "إيقاف الصيانة"));
         if (req.DefaultLimits != null) parts.Add(("default limits", "الحدود الافتراضية"));
-        if (req.Billing is { } bd) parts.Add(($"prices {bd.PriceFirstVenue} + {bd.PriceExtraVenue} JOD, setup {bd.SetupFee} JOD, trial {bd.TrialDays} days",
-            $"الأسعار {bd.PriceFirstVenue} + {bd.PriceExtraVenue} د.أ، التأسيس {bd.SetupFee} د.أ، التجربة {bd.TrialDays} يوم"));
+        if (req.Billing is { } bd) parts.Add(($"prices {bd.PriceSmallVenue} / {bd.PriceLargeVenue} JOD per venue ({bd.LargeVenueMinPitches}+ pitches is large), setup {bd.SetupFee} JOD, trial {bd.TrialDays} days",
+            $"الأسعار {bd.PriceSmallVenue} / {bd.PriceLargeVenue} د.أ لكل منشأة (الكبيرة من {bd.LargeVenueMinPitches} ملاعب)، التأسيس {bd.SetupFee} د.أ، التجربة {bd.TrialDays} يوم"));
         if (parts.Count > 0)
             await _audit.AddAsync("settings.updated", null, "settings", "1",
                 $"Platform settings: {string.Join(", ", parts.Select(p => p.En))}",
@@ -98,8 +98,9 @@ public class SettingsController : ControllerBase
                 row.MaintenanceMessageAr = req.MaintenanceMessageAr;
             if (req.Billing != null)
             {
-                row.PriceFirstVenue = req.Billing.PriceFirstVenue;
-                row.PriceExtraVenue = req.Billing.PriceExtraVenue;
+                row.PriceSmallVenue = req.Billing.PriceSmallVenue;
+                row.PriceLargeVenue = req.Billing.PriceLargeVenue;
+                row.LargeVenueMinPitches = req.Billing.LargeVenueMinPitches;
                 row.SetupFee = req.Billing.SetupFee;
                 row.TrialDays = req.Billing.TrialDays;
                 row.PaymentTermsDays = req.Billing.PaymentTermsDays;
@@ -132,8 +133,9 @@ public class SettingsController : ControllerBase
         DefaultMaxStaff = row.DefaultMaxStaff,
         Billing = new BillingDefaults
         {
-            PriceFirstVenue = row.PriceFirstVenue,
-            PriceExtraVenue = row.PriceExtraVenue,
+            PriceSmallVenue = row.PriceSmallVenue,
+            PriceLargeVenue = row.PriceLargeVenue,
+            LargeVenueMinPitches = row.LargeVenueMinPitches,
             SetupFee = row.SetupFee,
             TrialDays = row.TrialDays,
             PaymentTermsDays = row.PaymentTermsDays,

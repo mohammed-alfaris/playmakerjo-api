@@ -159,6 +159,13 @@ public class NotificationService
         return ids.Where(id => id != except).Distinct().ToList();
     }
 
+    /// <summary>
+    /// The person behind a booking, as the venue knows them: the player for an app booking,
+    /// the customer for a counter or web one (whose PlayerId is the owner's own id).
+    /// </summary>
+    private static string WhoBooked(Booking b, string fallback) =>
+        (b.IsManual ? b.Customer?.Name : b.Player?.Name) ?? fallback;
+
     private async Task NotifyVenueTeam(
         Venue venue, string permission, string? except, string title, string body, string type, string? referenceId)
     {
@@ -174,7 +181,7 @@ public class NotificationService
     public async Task NotifyNewBooking(Booking booking)
     {
         if (booking.Venue == null) return;
-        var player = booking.Player?.Name ?? "A player";
+        var player = WhoBooked(booking, "A player");
         var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
         await NotifyVenueTeam(
             booking.Venue, StaffPermissions.BookingsView, null,
@@ -194,6 +201,7 @@ public class NotificationService
     /// </summary>
     public async Task NotifyBookingMoved(Booking booking)
     {
+        if (booking.IsManual) return;   // no player account (counter or web): nobody to tell
         var venue = booking.Venue?.Name ?? "venue";
         var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
         await CreateNotification(
@@ -244,6 +252,7 @@ public class NotificationService
 
     public async Task NotifyBookingConfirmed(Booking booking)
     {
+        if (booking.IsManual) return;   // no player account (counter or web): nobody to tell
         var venue = booking.Venue?.Name ?? "venue";
         var date = booking.Date.ToString("MMM dd");
         await CreateNotification(
@@ -277,6 +286,7 @@ public class NotificationService
     /// </summary>
     public async Task NotifyBookingExpired(Booking booking)
     {
+        if (booking.IsManual) return;   // no player account (counter or web): nobody to tell
         var venue = booking.Venue?.Name ?? "the venue";
         var date = booking.Date.ToString("MMM dd");
         var time = booking.StartTime ?? "";
@@ -322,7 +332,7 @@ public class NotificationService
     {
         if (booking.Venue != null)
         {
-            var player = booking.Player?.Name ?? "a player";
+            var player = WhoBooked(booking, "a player");
             await NotifyVenueTeam(
                 booking.Venue, StaffPermissions.PaymentsRecord, null,
                 Bi("Payment Proof Received", "تم استلام إثبات الدفع"),
@@ -338,6 +348,7 @@ public class NotificationService
 
     public async Task NotifyProofApproved(Booking booking)
     {
+        if (booking.IsManual) return;   // no player account (counter or web): nobody to tell
         var venue = booking.Venue?.Name ?? "venue";
         await CreateNotification(
             booking.PlayerId,
@@ -353,6 +364,7 @@ public class NotificationService
 
     public async Task NotifyProofRejected(Booking booking, string? reason)
     {
+        if (booking.IsManual) return;   // no player account (counter or web): nobody to tell
         var venue = booking.Venue?.Name ?? "venue";
         var enBody = $"Your payment proof for {venue} was rejected.";
         var arBody = $"تم رفض إثبات الدفع لـ {venue}.";
@@ -375,13 +387,14 @@ public class NotificationService
     {
         var venue = booking.Venue?.Name ?? "venue";
         var date = booking.Date.ToString("MMM dd");
-        var player = booking.Player?.Name ?? "a player";
+        var player = WhoBooked(booking, "a player");
 
         // A counter booking's PlayerId is the owner's own id, not a player: nobody to tell,
-        // and the desk that took it is the desk that cancelled it.
-        if (booking.IsManual) return;
+        // and the desk that took it is the desk that cancelled it. A web booking has no player
+        // to tell either, but the team should hear when the guest or a colleague cancels it.
+        if (booking.IsManual && !booking.IsWeb) return;
 
-        if (cancelledByUserId != booking.PlayerId)
+        if (!booking.IsManual && cancelledByUserId != booking.PlayerId)
         {
             await CreateNotification(
                 booking.PlayerId,
@@ -412,6 +425,7 @@ public class NotificationService
 
     public async Task NotifyBookingCompleted(Booking booking)
     {
+        if (booking.IsManual) return;   // no player account (counter or web): nobody to tell
         var venue = booking.Venue?.Name ?? "venue";
         var date = booking.Date.ToString("MMM dd");
         await CreateNotification(
@@ -428,6 +442,7 @@ public class NotificationService
 
     public async Task NotifyNoShow(Booking booking)
     {
+        if (booking.IsManual) return;   // no player account (counter or web): nobody to tell
         var venue = booking.Venue?.Name ?? "venue";
         var date = booking.Date.ToString("MMM dd");
         await CreateNotification(
@@ -478,6 +493,33 @@ public class NotificationService
         );
     }
 
+    /// <summary>
+    /// A guest booked on the venue's web link. They have no account, so the team is the one to
+    /// act: confirm or decline a request, or watch for the deposit when they chose to pay now.
+    /// </summary>
+    public async Task NotifyWebRequest(Booking booking)
+    {
+        if (booking.Venue == null) return;
+        var who = booking.Customer?.Name ?? "A guest";
+        var phone = booking.Customer?.Phone ?? "";
+        var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
+        var paying = booking.Status == "pending_payment";
+        await NotifyVenueTeam(
+            booking.Venue, StaffPermissions.BookingsView, null,
+            Bi(paying ? "Web booking (paying now)" : "Web booking request", paying ? "حجز من الويب (دفع الآن)" : "طلب حجز من الويب"),
+            Bi(
+                paying
+                    ? $"{who} ({phone}) is holding {booking.Venue.Name} for {when} and paying the deposit by CliQ."
+                    : $"{who} ({phone}) asks to book {booking.Venue.Name} for {when}. Confirm or decline.",
+                paying
+                    ? $"{who} ({phone}) حجز {booking.Venue.Name} بتاريخ {when} وسيدفع العربون عبر كليك."
+                    : $"{who} ({phone}) يطلب حجز {booking.Venue.Name} بتاريخ {when}. أكّد أو ارفض."
+            ),
+            "web_request",
+            booking.Id
+        );
+    }
+
     /// <summary>A player reviewed the venue. Those who follow how the venue is doing hear about it.</summary>
     public async Task NotifyNewReview(Venue venue, string playerName, int rating)
     {
@@ -498,6 +540,7 @@ public class NotificationService
     /// <summary>The player's confirmed game is coming up.</summary>
     public async Task NotifyGameReminder(Booking booking)
     {
+        if (booking.IsManual) return;   // no player account (counter or web): nobody to tell
         var venue = booking.Venue?.Name ?? "the venue";
         await CreateNotification(
             booking.PlayerId,
@@ -515,7 +558,7 @@ public class NotificationService
     public async Task NotifyProofWaiting(Booking booking, int minutes)
     {
         if (booking.Venue == null) return;
-        var player = booking.Player?.Name ?? "A player";
+        var player = WhoBooked(booking, "A player");
         var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
         await NotifyVenueTeam(
             booking.Venue, StaffPermissions.PaymentsRecord, null,
@@ -532,6 +575,7 @@ public class NotificationService
     /// <summary>The player's unpaid booking is about to be released.</summary>
     public async Task NotifyPaymentDeadline(Booking booking, int minutesLeft)
     {
+        if (booking.IsManual) return;   // no player account (counter or web): nobody to tell
         var venue = booking.Venue?.Name ?? "the venue";
         var when = $"{booking.Date:yyyy-MM-dd} {booking.StartTime}";
         await CreateNotification(

@@ -40,8 +40,10 @@ public class SettingsResponse
 /// <summary>What a company without its own prices pays, and the terms every company gets.</summary>
 public class BillingDefaults
 {
-    [JsonPropertyName("priceFirstVenue")] public double PriceFirstVenue { get; set; }
-    [JsonPropertyName("priceExtraVenue")] public double PriceExtraVenue { get; set; }
+    /// <summary>Monthly price of a venue with fewer than <see cref="LargeVenueMinPitches"/> pitches.</summary>
+    [JsonPropertyName("priceSmallVenue")] public double PriceSmallVenue { get; set; }
+    [JsonPropertyName("priceLargeVenue")] public double PriceLargeVenue { get; set; }
+    [JsonPropertyName("largeVenueMinPitches")] public int LargeVenueMinPitches { get; set; }
     [JsonPropertyName("setupFee")] public double SetupFee { get; set; }
     [JsonPropertyName("trialDays")] public int TrialDays { get; set; }
     [JsonPropertyName("paymentTermsDays")] public int PaymentTermsDays { get; set; }

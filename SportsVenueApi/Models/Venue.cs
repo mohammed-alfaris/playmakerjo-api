@@ -50,6 +50,14 @@ public class Venue
     [MaxLength(50)]
     public string Status { get; set; } = "pending";
 
+    /// <summary>
+    /// The venue's public booking address: playmakerjo.com/v/{slug}. Latin letters, digits and
+    /// hyphens; unique. Existing venues started with their id, and the owner can change it.
+    /// </summary>
+    [Column("slug")]
+    [MaxLength(64)]
+    public string? Slug { get; set; }
+
     [Column("description", TypeName = "text")]
     public string? Description { get; set; }
 

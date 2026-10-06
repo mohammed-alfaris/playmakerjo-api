@@ -258,6 +258,31 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0
             }));
 
+    // The public web booking link: anyone can reach it without an account. Sending a booking
+    // request (or turning one into pay-now, or cancelling) is tight per address — enough for a
+    // family sharing a connection, not for someone filling a venue's evening with fake holds.
+    // Reading the venue page and status, and uploading a proof, get a looser budget.
+    var webRequestLimit = builder.Configuration.GetValue("RateLimiting:WebRequest:PermitLimit", 6);
+    options.AddPolicy("web-request", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = webRequestLimit,
+                Window = TimeSpan.FromMinutes(10),
+                QueueLimit = 0
+            }));
+    var webPublicLimit = builder.Configuration.GetValue("RateLimiting:WebPublic:PermitLimit", 60);
+    options.AddPolicy("web-public", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = webPublicLimit,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+
     var uploadsLimit = builder.Configuration.GetValue("RateLimiting:Uploads:PermitLimit", 20);
     options.AddPolicy("uploads", context =>
         RateLimitPartition.GetFixedWindowLimiter(UserOrIpKey(context),

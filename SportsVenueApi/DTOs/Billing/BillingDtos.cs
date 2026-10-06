@@ -90,8 +90,10 @@ public class CompanyBilling
     /// <summary>"monthly" | "annual"</summary>
     [JsonPropertyName("cycle")] public string Cycle { get; set; } = "";
     [JsonPropertyName("trialEndsOn")] public string? TrialEndsOn { get; set; }
-    [JsonPropertyName("priceFirstVenue")] public double PriceFirstVenue { get; set; }
-    [JsonPropertyName("priceExtraVenue")] public double PriceExtraVenue { get; set; }
+    [JsonPropertyName("priceSmallVenue")] public double PriceSmallVenue { get; set; }
+    [JsonPropertyName("priceLargeVenue")] public double PriceLargeVenue { get; set; }
+    /// <summary>Pitches from which a venue is "large" (platform-wide).</summary>
+    [JsonPropertyName("largeVenueMinPitches")] public int LargeVenueMinPitches { get; set; }
     /// <summary>True when the price is this company's own rather than the platform default.</summary>
     [JsonPropertyName("customPrices")] public bool CustomPrices { get; set; }
     [JsonPropertyName("setupFeeWaived")] public bool SetupFeeWaived { get; set; }
@@ -113,8 +115,8 @@ public class UpdateCompanyBillingRequest
 
 public class CompanyPricesRequest
 {
-    [JsonPropertyName("firstVenue")] [Range(0, 10000)] public double? FirstVenue { get; set; }
-    [JsonPropertyName("extraVenue")] [Range(0, 10000)] public double? ExtraVenue { get; set; }
+    [JsonPropertyName("smallVenue")] [Range(0, 10000)] public double? SmallVenue { get; set; }
+    [JsonPropertyName("largeVenue")] [Range(0, 10000)] public double? LargeVenue { get; set; }
 }
 
 public class SuspendCompanyRequest

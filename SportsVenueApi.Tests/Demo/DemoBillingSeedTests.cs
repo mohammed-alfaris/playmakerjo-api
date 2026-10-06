@@ -37,14 +37,14 @@ public class DemoBillingSeedTests
         Assert.All(await db.Invoices.Where(i => i.OwnerId == "demo_bill_own1").ToListAsync(),
             i => Assert.StartsWith("DEMO-", i.Number));
 
-        // The active company bills a subscription for its two venues and commission on last month.
+        // The active company bills a small venue (50), a large one (75) and commission on last month.
         var today = PlatformConstants.JordanToday();
         var lastMonth = new DateTime(today.Year, today.Month, 1).AddMonths(-1);
         var result = await billing.GenerateAsync(lastMonth, null, "demo_bill_own2");
         var invoice = Assert.Single(result.Created);
         var lines = await db.InvoiceLines.Where(l => l.InvoiceId == invoice.Id).ToListAsync();
-        Assert.Contains(lines, l => l.Kind == "subscription");
-        Assert.Contains(lines, l => l.Kind == "extra_venues");
+        Assert.Contains(lines, l => l.Kind == "subscription" && l.Amount == 50);
+        Assert.Contains(lines, l => l.Kind == "subscription" && l.Amount == 75);
         Assert.Contains(lines, l => l.Kind == "commission" && l.Amount > 0);
 
         await DemoBillingSeed.RemoveAsync(db);

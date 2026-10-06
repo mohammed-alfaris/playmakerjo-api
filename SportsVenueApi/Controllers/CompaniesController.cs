@@ -202,16 +202,16 @@ public class CompaniesController : ControllerBase
         }
         if (req.Prices != null)
         {
-            company.PriceFirstVenue = req.Prices.FirstVenue;
-            company.PriceExtraVenue = req.Prices.ExtraVenue;
+            company.PriceSmallVenue = req.Prices.SmallVenue;
+            company.PriceLargeVenue = req.Prices.LargeVenue;
         }
         if (req.SetupFeeWaived is { } waived) company.SetupFeeWaived = waived;
 
-        var (first, extra) = await _billing.PricesForAsync(company);
+        var prices = await _billing.PricesForAsync(company);
         var trial = company.TrialEndsOn?.ToString("yyyy-MM-dd") ?? "none";
         await _audit.AddAsync("company.billing", ownerId, "company", ownerId,
-            $"Billing set: {company.BillingCycle}, {AuditLog.Jod(first)} + {AuditLog.Jod(extra)} per extra venue, trial ends {trial}{(company.SetupFeeWaived ? ", setup fee waived" : "")}",
-            $"الفوترة: {(company.BillingCycle == BillingService.Annual ? "سنوي" : "شهري")}، {AuditLog.Jod(first)} + {AuditLog.Jod(extra)} لكل ملعب إضافي، نهاية التجربة {trial}{(company.SetupFeeWaived ? "، دون رسوم تأسيس" : "")}");
+            $"Billing set: {company.BillingCycle}, {AuditLog.Jod(prices.Small)} / {AuditLog.Jod(prices.Large)} per venue, trial ends {trial}{(company.SetupFeeWaived ? ", setup fee waived" : "")}",
+            $"الفوترة: {(company.BillingCycle == BillingService.Annual ? "سنوي" : "شهري")}، {AuditLog.Jod(prices.Small)} / {AuditLog.Jod(prices.Large)} لكل منشأة، نهاية التجربة {trial}{(company.SetupFeeWaived ? "، دون رسوم تأسيس" : "")}");
 
         company.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
@@ -299,16 +299,17 @@ public class CompaniesController : ControllerBase
 
     private async Task<CompanyBilling> BillingOfAsync(Company company)
     {
-        var (first, extra) = await _billing.PricesForAsync(company);
+        var prices = await _billing.PricesForAsync(company);
         var (count, amount) = await _billing.OverdueAsync(company.OwnerId);
         return new CompanyBilling
         {
             Status = BillingService.StatusOf(company, PlatformConstants.JordanToday()),
             Cycle = company.BillingCycle,
             TrialEndsOn = company.TrialEndsOn?.ToString("yyyy-MM-dd"),
-            PriceFirstVenue = first,
-            PriceExtraVenue = extra,
-            CustomPrices = company.PriceFirstVenue != null || company.PriceExtraVenue != null,
+            PriceSmallVenue = prices.Small,
+            PriceLargeVenue = prices.Large,
+            LargeVenueMinPitches = prices.LargeFrom,
+            CustomPrices = company.PriceSmallVenue != null || company.PriceLargeVenue != null,
             SetupFeeWaived = company.SetupFeeWaived,
             OverdueCount = count,
             OverdueAmount = amount,

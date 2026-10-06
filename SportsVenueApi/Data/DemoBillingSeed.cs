@@ -60,7 +60,7 @@ public static class DemoBillingSeed
         {
             DemoVenue(Prefix + "v1", OverdueOwner, "DEMO Overdue Arena", 20, 31.99, 35.86),
             DemoVenue(Prefix + "v2", ActiveOwner, "DEMO Active Club — North", 25, 32.02, 35.87),
-            DemoVenue(Prefix + "v3", ActiveOwner, "DEMO Active Club — South", 30, 31.93, 35.93),
+            DemoVenue(Prefix + "v3", ActiveOwner, "DEMO Active Club — South", 30, 31.93, 35.93, pitches: 3),
         };
         db.Venues.AddRange(venues);
         await db.SaveChangesAsync();
@@ -147,9 +147,9 @@ public static class DemoBillingSeed
                     new InvoiceLine
                     {
                         Id = $"{Prefix}line{back}a", Kind = "subscription",
-                        Description = $"Monthly subscription ({month:yyyy-MM}): first venue",
-                        DescriptionAr = $"الاشتراك الشهري ({month:yyyy-MM}): الملعب الأول",
-                        Quantity = 1, UnitPrice = 30, Amount = 30, CoversFrom = month, CoversTo = month.AddMonths(1).AddDays(-1), Sort = 0,
+                        Description = $"Monthly subscription ({month:yyyy-MM}): 1 venue(s) with up to 2 pitch(es)",
+                        DescriptionAr = $"الاشتراك الشهري ({month:yyyy-MM}): 1 منشأة حتى 2 ملعب",
+                        Quantity = 1, UnitPrice = 50, Amount = 50, CoversFrom = month, CoversTo = month.AddMonths(1).AddDays(-1), Sort = 0,
                     },
                 ],
             };
@@ -216,7 +216,7 @@ public static class DemoBillingSeed
         CreatedAt = DateTime.UtcNow.AddMonths(-5),
     };
 
-    private static Venue DemoVenue(string id, string ownerId, string name, double price, double lat, double lng)
+    private static Venue DemoVenue(string id, string ownerId, string name, double price, double lat, double lng, int pitches = 1)
     {
         var hours = System.Text.Json.JsonSerializer.Serialize(
             new[] { "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday" }
@@ -228,6 +228,12 @@ public static class DemoBillingSeed
             CliqAlias = "demo@cliq", OperatingHoursJson = hours, CreatedAt = DateTime.UtcNow.AddMonths(-5),
         };
         venue.Sports = ["football"];
+        // Three pitches or more makes a "large" venue, billed at the higher price.
+        if (pitches > 1)
+            venue.Pitches = Enumerable.Range(1, pitches).Select(i => new DTOs.Venues.PitchDto
+            {
+                Id = $"{id}_p{i}", Name = $"Pitch {i}", Sport = "football", PricePerHour = price,
+            }).ToList();
         return venue;
     }
 }

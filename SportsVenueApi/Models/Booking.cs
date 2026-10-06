@@ -135,6 +135,33 @@ public class Booking
     [Column("is_manual")]
     public bool IsManual { get; set; }
 
+    /// <summary>
+    /// Set only for bookings made on the venue's public web link: "web". Null for everything
+    /// else, whose channel stays what <see cref="IsManual"/> says (counter or app).
+    ///
+    /// A web booking has no player account — the guest gave a name and a phone — so it is
+    /// stored as IsManual like a counter booking and inherits every rule that follows from
+    /// "nobody to notify, remind or charge". This field marks only where the web differs:
+    /// the venue team is told about it, it can wait on the guest's payment proof, and an
+    /// unanswered request is released by the expiry job.
+    /// </summary>
+    [Column("source")]
+    [MaxLength(16)]
+    public string? Source { get; set; }
+
+    public const string WebSource = "web";
+
+    [NotMapped]
+    public bool IsWeb => Source == WebSource;
+
+    /// <summary>
+    /// The guest's key to their web booking (status page, payment proof, cancel). Unguessable;
+    /// null for every other booking.
+    /// </summary>
+    [Column("public_token")]
+    [MaxLength(64)]
+    public string? PublicToken { get; set; }
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
